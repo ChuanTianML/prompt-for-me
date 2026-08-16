@@ -58,11 +58,83 @@ test('generate reuses the session route and sends bounded contextual JSON withou
   assert.equal(requests.length, 1)
   assert.equal(requests[0].provider, 'session-provider')
   assert.equal(requests[0].model, 'session-model')
+  assert.equal(requests[0].reasoningEffort, 'off')
   assert.equal(requests[0].tools, undefined)
   const framed = JSON.parse(requests[0].messages[0].content[0].text)
   assert.equal(framed.currentDraft, 'Please inspect this.')
   assert.deepEqual(framed.previousPrompts, [{ text: 'Keep changes small and run focused tests.' }])
   assert.deepEqual(framed.previousSuggestionOutcomes, [{ kind: 'cycled', candidate: 'Old suggestion' }])
+})
+
+test('generate records token usage and privacy-safe stage metrics', async () => {
+  let time = 0
+  const metrics = []
+  const { ctx } = contextWith(async function * () {
+    yield { type: 'text-delta', text: candidateLines('A') + '\n' }
+    yield { type: 'text-delta', text: candidateLines('B', 'C') + '\n' }
+    yield {
+      type: 'usage',
+      usage: { inputTokens: 9000, outputTokens: 120, cacheReadTokens: 2000, reasoningTokens: 0 },
+    }
+    yield { type: 'finish', reason: { kind: 'stop' } }
+  })
+  const generate = host._testing.createGenerateStream(ctx, resolveConfig({}), {
+    now: () => { time += 10; return time },
+    record: (metric) => metrics.push(metric),
+  })
+  const result = await generate({
+    sessionId: 'session-1', draft: 'private draft', excluded: [], localOutcomes: [],
+  }, async () => {})
+
+  assert.equal(result.ok, true)
+  assert.equal(metrics.length, 1)
+  assert.deepEqual(metrics[0].route, {
+    provider: 'session-provider', model: 'session-model', reasoningEffort: 'off',
+  })
+  assert.deepEqual(metrics[0].usage, {
+    inputTokens: 9000, totalInputTokens: 11000, outputTokens: 120,
+    cacheReadTokens: 2000, reasoningTokens: 0,
+  })
+  assert.equal(metrics[0].context.currentConversationItems, 1)
+  assert.equal(metrics[0].stages.candidateMs.length, 3)
+  assert.equal(metrics[0].stages.modelFirstReasoningMs, null)
+  assert.equal(JSON.stringify(metrics[0]).includes('private draft'), false)
+  assert.equal(JSON.stringify(metrics[0]).includes('Fix the concurrency bug'), false)
+})
+
+test('metrics store stays bounded and returns detached snapshots', () => {
+  const logs = []
+  const store = host._testing.createMetricsStore({
+    logger: { info: (message) => logs.push(message) },
+  }, 2)
+  const makeMetric = (requestId) => ({
+    requestId,
+    stages: { candidateMs: [] },
+    context: null,
+    route: null,
+    usage: null,
+  })
+  store.record(makeMetric('one'))
+  store.record(makeMetric('two'))
+  store.record(makeMetric('three'))
+  const snapshot = store.snapshot()
+  assert.deepEqual(snapshot.map((metric) => metric.requestId), ['two', 'three'])
+  snapshot[0].stages.candidateMs.push(1)
+  assert.deepEqual(store.snapshot()[0].stages.candidateMs, [])
+  assert.match(logs[2], /^prompt-for-me metrics /)
+})
+
+test('metrics failures never change a successful generation', async () => {
+  const { ctx } = contextWith(async function * () {
+    yield { type: 'text-delta', text: candidateLines('A', 'B', 'C') }
+  })
+  const generate = host._testing.createGenerateStream(ctx, resolveConfig({}), {
+    record: () => { throw new Error('metrics unavailable') },
+  })
+  const result = await generate({
+    sessionId: 'session-1', draft: '', excluded: [], localOutcomes: [],
+  }, async () => {})
+  assert.equal(result.ok, true)
 })
 
 test('generate honors a fixed route override', async () => {

@@ -20,7 +20,7 @@ Prompt for Me (中文名：Prompt 嘴替) suggests the next message you may want
 The release tarball is the simplest option because it contains prebuilt Host and Client artifacts:
 
 ```sh
-dsh plugin --profile web add https://github.com/ChuanTianML/prompt-for-me/releases/download/v0.2.1/dsh-prompt-for-me-0.2.1.tgz
+dsh plugin --profile web add https://github.com/ChuanTianML/prompt-for-me/releases/download/v0.2.2/dsh-prompt-for-me-0.2.2.tgz
 ```
 
 Restart `dsh web` after installation.
@@ -28,7 +28,7 @@ Restart `dsh web` after installation.
 You may also install a pinned Git tag:
 
 ```sh
-dsh plugin --profile web add github:ChuanTianML/prompt-for-me#v0.2.1
+dsh plugin --profile web add github:ChuanTianML/prompt-for-me#v0.2.2
 ```
 
 pnpm 10 may ask you to allow the package's `prepare` script for a Git install. Add `dsh-prompt-for-me: true` under `allowBuilds` in the Web profile's `pnpm-workspace.yaml`, then run the command again. The script only copies the checked-out Host files and wraps the checked-out Client factory; it performs no downloads.
@@ -75,6 +75,16 @@ localStorage.removeItem('dsh.prompt-for-me.outcomes.v1')
 DeepSeek Harness `0.1.0-rc.6` does not expose downstream registration for custom durable session-event types. For that reason, the standalone plugin does not append its auxiliary model request or outcomes to the Harness session log; doing so would make persisted sessions unreadable to the stock runtime. This is the main difference from the experimental in-tree implementation and will be revisited when a public event-registration API exists.
 
 The generation RPC uses NDJSON. Each complete candidate is validated before it reaches the draft; partial model tokens and incomplete JSON never enter the composer. Hovering the Sparkles button shows only the current action and shortcut, such as `Generate next message (⌘⇧Space)` or `Try another (⌘⇧Space)`.
+
+The auxiliary request always uses reasoning effort `off`. The model receives one system instruction plus one JSON user message with `currentDraft`, bounded `currentConversation` user/assistant text, bounded `previousPrompts`, browser-local `previousSuggestionOutcomes`, and the immediately `excludedCandidates`. It receives no tool schemas or attachments.
+
+The Host retains the latest 50 privacy-safe performance records in memory and logs each record as `prompt-for-me metrics`. Records contain model route, text byte/item counts, history/input preparation time, first model chunk/reasoning/text times, per-candidate times, total model/request time, and provider token usage. They contain no prompt, candidate, or outcome text. Query the current process with:
+
+```sh
+curl -sS -X POST -H 'content-type: application/json' \
+  -d '{"method":"metrics"}' \
+  http://127.0.0.1:3080/dsh-prompt-for-me/rpc
+```
 
 ## Configuration
 
