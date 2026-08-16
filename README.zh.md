@@ -20,7 +20,7 @@ Prompt for Me 会根据 DeepSeek Harness 中有界的会话历史和本地建议
 推荐安装 Release 中已经构建好的 tarball，不需要执行构建脚本：
 
 ```sh
-dsh plugin --profile web add https://github.com/ChuanTianML/prompt-for-me/releases/download/v0.3.0/dsh-prompt-for-me-0.3.0.tgz
+dsh plugin --profile web add https://github.com/ChuanTianML/prompt-for-me/releases/download/v0.3.1/dsh-prompt-for-me-0.3.1.tgz
 ```
 
 安装后重启 `dsh web`。
@@ -28,7 +28,7 @@ dsh plugin --profile web add https://github.com/ChuanTianML/prompt-for-me/releas
 也可以安装固定 Git 标签：
 
 ```sh
-dsh plugin --profile web add github:ChuanTianML/prompt-for-me#v0.3.0
+dsh plugin --profile web add github:ChuanTianML/prompt-for-me#v0.3.1
 ```
 
 使用 pnpm 10 从 Git 安装时，可能需要在 Web profile 的 `pnpm-workspace.yaml` 中为 `allowBuilds` 添加 `dsh-prompt-for-me: true`，然后重新运行命令。`prepare` 脚本只复制 checkout 中的 Host 文件并包装 Client factory，不会下载任何内容。
@@ -59,12 +59,14 @@ dsh plugin --profile web remove dsh-prompt-for-me
 每次生成建议时，Host 可能把下列有界文本发送给当前选择的模型提供方：
 
 - 当前草稿；
-- 当前会话最近 3 轮用户/助手文本；
+- 当前会话最近 3 轮真人用户/助手文本；
 - 当前会话中的建议编辑、原样接受和拒绝记录；
 - 从最多 20 个历史会话的手写提示词和建议交互中提炼的偏好记忆；
 - 刚看过的一批候选，用于避免重复。
 
 当前草稿和最近 3 轮决定当前任务、意图和消息内容；当前会话反馈只调整眼前的表达；跨会话记忆只能影响长期的风格、详略和工作流偏好。手写提示词和编辑后的建议权重高于原样接受，拒绝记录只作为较弱的负向信号。
+
+Harness 会把工作区指令、运行时上下文和 Skill 列表记录为用户角色事件；插件会从会话轮次和偏好记忆中排除这些非真人来源。如果草稿与真人会话均为空，插件会在调用模型前停止生成。
 
 常见 API Key、token、password 和 Bearer token 会在模型调用前替换为 `[REDACTED_SECRET]`。插件不会收集附件、工具参数、文件、凭证或二进制内容；没有分析上报服务，只会调用 Harness 已选择的模型路由。
 

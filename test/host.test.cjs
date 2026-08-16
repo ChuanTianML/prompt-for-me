@@ -6,8 +6,23 @@ const { EventEmitter } = require('node:events')
 const host = require('../src/index.cjs')
 const { resolveConfig } = require('../src/core.cjs')
 
-function userEvent(text) {
-  return { type: 'user/message', data: { content: [{ type: 'text', text }], source: { kind: 'user' } } }
+function userEvent(text, source = { kind: 'user' }) {
+  return { type: 'user/message', data: { content: [{ type: 'text', text }], source } }
+}
+
+function assistantEvent(text) {
+  return {
+    type: 'assistant/message',
+    data: {
+      turn: 1,
+      step: 1,
+      message: {
+        role: 'assistant',
+        content: [{ type: 'text', text }],
+        source: { kind: 'model', provider: 'test', model: 'test' },
+      },
+    },
+  }
 }
 
 function candidateLines(...candidates) {
@@ -17,7 +32,12 @@ function candidateLines(...candidates) {
 function contextWith(streamFactory) {
   const requests = []
   const session = {
-    events: [userEvent('Fix the concurrency bug and report focused tests.')],
+    events: [
+      userEvent('Fix the concurrency bug and report focused tests.'),
+      userEvent('Workspace instructions '.repeat(1000), { kind: 'agent-instructions' }),
+      userEvent('Skill catalog '.repeat(1000), { kind: 'skill-catalog' }),
+      assistantEvent('I found the race and identified the focused tests.'),
+    ],
     requestHeader: () => ({ config: { provider: 'session-provider', model: 'session-model' } }),
   }
   const services = {
@@ -37,7 +57,7 @@ function contextWith(streamFactory) {
     },
     agentDefaultModel: { currentSelection: () => ({ provider: 'default', model: 'default' }) },
   }
-  return { ctx: { get: (name) => services[name] }, requests }
+  return { ctx: { get: (name) => services[name] }, requests, session }
 }
 
 test('generate reuses the session route and sends bounded contextual JSON without tools', async () => {
@@ -68,6 +88,10 @@ test('generate reuses the session route and sends bounded contextual JSON withou
   const framed = JSON.parse(requests[0].messages[0].content[0].text)
   assert.equal(framed.current.draft, 'Please inspect this.')
   assert.equal(framed.current.recentTurns.length, 1)
+  assert.deepEqual(framed.current.recentTurns[0], {
+    user: { text: 'Fix the concurrency bug and report focused tests.', origin: 'manual' },
+    assistant: { text: 'I found the race and identified the focused tests.' },
+  })
   assert.deepEqual(framed.userPreferenceMemory.manualPrompts, [
     { text: 'Keep changes small and run focused tests.' },
   ])
@@ -120,6 +144,25 @@ test('historicalEvents retains session IDs for outcome correlation', async () =>
   assert.equal(history.length, 1)
   assert.equal(history[0].sessionId, 'history-1')
   assert.equal(history[0].events[0].data.content[0].text, 'Keep changes small and run focused tests.')
+})
+
+test('generate rejects an empty draft without a direct human message', async () => {
+  const { ctx, requests, session } = contextWith(async function * () {
+    yield { type: 'text-delta', text: candidateLines('A', 'B', 'C') }
+  })
+  session.events = [
+    userEvent('Workspace instructions', { kind: 'agent-instructions' }),
+    userEvent('Skill catalog', { kind: 'skill-catalog' }),
+  ]
+  const result = await host._testing.createGenerateHandler(ctx, resolveConfig({}))({
+    sessionId: 'session-1', draft: '', excluded: [], localOutcomes: [],
+  })
+  assert.deepEqual(result, {
+    ok: false,
+    code: 'NO_USER_CONTEXT',
+    message: 'Prompt for Me needs a draft or a previous user message.',
+  })
+  assert.equal(requests.length, 0)
 })
 
 test('metrics store stays bounded and returns detached snapshots', () => {

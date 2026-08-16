@@ -20,7 +20,7 @@ Prompt for Me (中文名：Prompt 嘴替) suggests the next message you may want
 The release tarball is the simplest option because it contains prebuilt Host and Client artifacts:
 
 ```sh
-dsh plugin --profile web add https://github.com/ChuanTianML/prompt-for-me/releases/download/v0.3.0/dsh-prompt-for-me-0.3.0.tgz
+dsh plugin --profile web add https://github.com/ChuanTianML/prompt-for-me/releases/download/v0.3.1/dsh-prompt-for-me-0.3.1.tgz
 ```
 
 Restart `dsh web` after installation.
@@ -28,7 +28,7 @@ Restart `dsh web` after installation.
 You may also install a pinned Git tag:
 
 ```sh
-dsh plugin --profile web add github:ChuanTianML/prompt-for-me#v0.3.0
+dsh plugin --profile web add github:ChuanTianML/prompt-for-me#v0.3.1
 ```
 
 pnpm 10 may ask you to allow the package's `prepare` script for a Git install. Add `dsh-prompt-for-me: true` under `allowBuilds` in the Web profile's `pnpm-workspace.yaml`, then run the command again. The script only copies the checked-out Host files and wraps the checked-out Client factory; it performs no downloads.
@@ -59,12 +59,14 @@ To pin an auxiliary model, set both `provider` and `model` in `cordis.patch.yml`
 On each generation request, the Host may send these bounded text fields to the selected model provider:
 
 - the current draft;
-- the last three user/assistant turns from the current session;
+- the last three direct-human/assistant turns from the current session;
 - current-session suggestion edits, exact accepts, and rejected suggestions;
 - preference memory derived from manual prompts and suggestion interactions in up to 20 earlier sessions;
 - the candidates from the immediately previous batch, so they are not repeated.
 
 The current draft and recent turns determine the task, intent, and message content. Current-session feedback adjusts the immediate wording. Cross-session memory may influence only durable style, detail, and workflow preferences. Manual prompts and edited suggestions carry more weight than exact accepts; rejected suggestions are weak negative evidence.
+
+Harness records injected workspace instructions, runtime context, and skill catalogs in user-role events. The plugin excludes these non-human sources from conversation turns and preference memory. If both the draft and direct-human conversation are empty, generation stops before the model call.
 
 Common API-key, token, password, and Bearer-token patterns are replaced with `[REDACTED_SECRET]` before the model call. Attachments, tool arguments, files, credentials, and binary blocks are not collected. The plugin has no analytics endpoint and sends data only to the model route already selected in Harness.
 

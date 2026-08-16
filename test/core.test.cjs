@@ -5,6 +5,16 @@ const assert = require('node:assert/strict')
 const core = require('../src/core.cjs')
 
 function message(type, text, source = { kind: 'user' }) {
+  if (type === 'assistant/message') {
+    return {
+      type,
+      data: {
+        turn: 1,
+        step: 1,
+        message: { role: 'assistant', content: [{ type: 'text', text }], source },
+      },
+    }
+  }
   return { type, data: { content: [{ type: 'text', text }], source } }
 }
 
@@ -47,6 +57,23 @@ test('message extraction keeps only visible text blocks', () => {
     ],
   }
   assert.equal(core.messageText(event), 'first\nsecond')
+})
+
+test('conversation extraction keeps human prompts and nested assistant messages only', () => {
+  const events = [
+    message('user/message', 'Human request'),
+    message('user/message', '<system-reminder>workspace instructions</system-reminder>', {
+      kind: 'agent-instructions',
+    }),
+    message('user/message', 'Runtime policy', { kind: 'plugin', plugin: 'system-prompt' }),
+    message('user/message', 'Skill catalog', { kind: 'skill-catalog' }),
+    message('assistant/message', 'Agent response', { kind: 'model' }),
+  ]
+  assert.deepEqual(core.conversationMessages(events), [
+    { role: 'user', text: 'Human request' },
+    { role: 'assistant', text: 'Agent response' },
+  ])
+  assert.equal(core.eventMessage(events[4]), events[4].data.message)
 })
 
 test('takeRecentWithinBudget prefers the newest items', () => {
@@ -97,6 +124,10 @@ test('buildSuggestionInput separates current context, session feedback, and pref
     message('user/message', 'Current exact'),
     message('assistant/message', 'Exact reply', { kind: 'assistant' }),
     message('user/message', 'Current manual'),
+    message('user/message', 'Injected workspace instructions'.repeat(1000), {
+      kind: 'agent-instructions',
+    }),
+    message('user/message', 'Injected skill catalog'.repeat(1000), { kind: 'skill-catalog' }),
     message('assistant/message', 'Latest reply', { kind: 'assistant' }),
   ], [
     { sessionId: 'history-new', events: [
@@ -157,6 +188,7 @@ test('recent context keeps three turns and truncates oversized UTF-8 text instea
     message('user/message', 'turn two'),
     message('assistant/message', 'reply two', { kind: 'assistant' }),
     message('user/message', 'turn three'),
+    message('user/message', 'Injected context'.repeat(1000), { kind: 'plugin', plugin: 'context' }),
     message('assistant/message', `${'很长的回答'.repeat(1000)}${suffix}`, { kind: 'assistant' }),
   ]
   const turns = core.recentConversationTurns(events, [], 'current', config)
@@ -204,6 +236,9 @@ test('systemPrompt states the signal hierarchy and progressive NDJSON response',
   assert.match(prompt, /manualPrompts and editedSuggestions outweigh acceptedExact/)
   assert.match(prompt, /rejectedSuggestions only as weak negative evidence/)
   assert.match(prompt, /must never override the current task/)
+  assert.match(prompt, /in the user's voice/)
+  assert.match(prompt, /Never write the coding agent's reply/)
+  assert.match(prompt, /ask the user what to do next/)
   assert.match(prompt, /exactly 4 distinct suggestions/)
   assert.match(prompt, /"candidate":"suggestion 4"/)
   assert.match(prompt, /NDJSON/)
