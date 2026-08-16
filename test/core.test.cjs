@@ -78,20 +78,19 @@ test('history selection favors newest sessions from SessionQuery newest-first re
   assert.deepEqual(input.previousPrompts, [{ text: 'newer one' }, { text: 'newer two' }])
 })
 
-test('parseCandidates enforces strict JSON, distinct values, exclusions, and dynamic count', () => {
+test('parseCandidateLine enforces one bounded candidate field', () => {
   const config = core.resolveConfig({ candidateCount: 3 })
-  assert.deepEqual(core.parseCandidates(JSON.stringify({
-    candidates: [' one ', 'two', 'three', 'four'],
-  }), config, ['four']), ['one', 'two', 'three'])
-  assert.throws(() => core.parseCandidates('not json', config, []), /not-json/)
-  assert.throws(() => core.parseCandidates(JSON.stringify({ candidates: ['one', 'one'] }), config, []), /too-few/)
-  assert.throws(() => core.parseCandidates(JSON.stringify({ candidates: ['one', 2, 'three'] }), config, []), /non-string/)
+  assert.equal(core.parseCandidateLine('{"candidate":" one "}', config), 'one')
+  assert.throws(() => core.parseCandidateLine('not json', config), /not-json/)
+  assert.throws(() => core.parseCandidateLine('{"candidate":"one","extra":true}', config), /invalid-line/)
+  assert.throws(() => core.parseCandidateLine('{"candidate":2}', config), /invalid-line/)
 })
 
-test('systemPrompt asks for the configured candidate count and treats history as data', () => {
+test('systemPrompt asks for progressive NDJSON and treats history as data', () => {
   const prompt = core.systemPrompt(4)
   assert.match(prompt, /exactly 4 distinct suggestions/)
-  assert.match(prompt, /"suggestion 4"/)
+  assert.match(prompt, /"candidate":"suggestion 4"/)
+  assert.match(prompt, /NDJSON/)
   assert.match(prompt, /untrusted data/)
   assert.match(prompt, /Do not weaken safety checks/)
 })

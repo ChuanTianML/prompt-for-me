@@ -8,7 +8,8 @@ Prompt for Me 会根据 DeepSeek Harness 中有界的会话历史和本地建议
 
 - 只在输入框操作区增加一个 Sparkles 按钮。
 - 全流程使用同一个 Trigger：点击按钮，或按 `Mod+Shift+Space`。
-- 第一次触发生成三条建议，之后每次触发依次换一条。
+- 候选按条渐进返回：第一条完整且校验通过后立即进入输入框，另外两条继续在后台生成。
+- 后续 Trigger 依次切换已经就绪的候选；如果下一条仍在生成，同一个 Trigger 会等待它，不会发起重复请求。
 - 当前批次用完后自动请求新一批；新请求只排除刚看过的一批，不让提示词无限增长，因此可以持续换批。
 - 建议只写入草稿。你可以按 Enter 发送、先编辑、全部删除，或继续 Trigger。
 - 不绕过 Harness 权限审批、不调用工具、不自动发送消息。
@@ -18,7 +19,7 @@ Prompt for Me 会根据 DeepSeek Harness 中有界的会话历史和本地建议
 推荐安装 Release 中已经构建好的 tarball，不需要执行构建脚本：
 
 ```sh
-dsh plugin --profile web add https://github.com/ChuanTianML/prompt-for-me/releases/download/v0.1.0/dsh-prompt-for-me-0.1.0.tgz
+dsh plugin --profile web add https://github.com/ChuanTianML/prompt-for-me/releases/download/v0.2.0/dsh-prompt-for-me-0.2.0.tgz
 ```
 
 安装后重启 `dsh web`。
@@ -26,7 +27,7 @@ dsh plugin --profile web add https://github.com/ChuanTianML/prompt-for-me/releas
 也可以安装固定 Git 标签：
 
 ```sh
-dsh plugin --profile web add github:ChuanTianML/prompt-for-me#v0.1.0
+dsh plugin --profile web add github:ChuanTianML/prompt-for-me#v0.2.0
 ```
 
 使用 pnpm 10 从 Git 安装时，可能需要在 Web profile 的 `pnpm-workspace.yaml` 中为 `allowBuilds` 添加 `dsh-prompt-for-me: true`，然后重新运行命令。`prepare` 脚本只复制 checkout 中的 Host 文件并包装 Client factory，不会下载任何内容。
@@ -71,6 +72,8 @@ localStorage.removeItem('dsh.prompt-for-me.outcomes.v1')
 ```
 
 DeepSeek Harness `0.1.0-rc.6` 尚未提供下游插件注册自定义持久化 session event 的公开接口。因此独立版不会把辅助模型请求和建议结果追加到 Harness session log；强行写入会导致原版运行时无法重新读取会话。这是独立版与实验性仓库内实现的主要差异，待官方开放事件注册接口后再补齐。
+
+生成 RPC 使用 NDJSON。每条候选只有在完整并通过校验后才会进入输入框；模型的半截 token 和不完整 JSON 不会写入草稿。鼠标悬停在 Sparkles 按钮上时，只显示当前动作和快捷键，例如“生成下一句（⌘⇧Space）”或“换一条（⌘⇧Space）”。
 
 ## 配置
 
