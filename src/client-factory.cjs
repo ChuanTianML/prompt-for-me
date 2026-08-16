@@ -2,7 +2,8 @@
 
 module.exports = function createClientPlugin(React, options) {
   const RPC_PATH = '/dsh-prompt-for-me/rpc'
-  const STORAGE_KEY = 'dsh.prompt-for-me.outcomes.v1'
+  const STORAGE_KEY = 'dsh.prompt-for-me.outcomes.v2'
+  const LEGACY_STORAGE_KEY = 'dsh.prompt-for-me.outcomes.v1'
   const TRIGGER_COALESCE_MS = 250
   const stores = new Map()
   const config = { shortcut: 'Mod+Shift+Space', maxLocalOutcomes: 50 }
@@ -95,6 +96,7 @@ module.exports = function createClientPlugin(React, options) {
         index: -1,
         sourceDraft: '',
         observedDraft: '',
+        observedPhase: null,
         requestSeq: 0,
         pending: false,
         awaitingNext: false,
@@ -112,21 +114,87 @@ module.exports = function createClientPlugin(React, options) {
     for (const listener of [...store.listeners]) listener()
   }
 
+  function migrateLegacyOutcome(raw) {
+    if (!raw || typeof raw !== 'object' || typeof raw.candidate !== 'string'
+      || raw.candidate === '') return undefined
+    if (raw.kind === 'submitted-exact') {
+      return {
+        sessionId: null,
+        action: 'submitted',
+        origin: 'suggestion-exact',
+        originalText: raw.candidate,
+        finalText: raw.candidate,
+        at: Number.isFinite(raw.at) ? raw.at : Date.now(),
+      }
+    }
+    if (raw.kind === 'submitted-edited' && typeof raw.resultingText === 'string'
+      && raw.resultingText !== '') {
+      return {
+        sessionId: null,
+        action: 'submitted',
+        origin: 'suggestion-edited',
+        originalText: raw.candidate,
+        finalText: raw.resultingText,
+        at: Number.isFinite(raw.at) ? raw.at : Date.now(),
+      }
+    }
+    if (raw.kind === 'cycled') {
+      return {
+        sessionId: null,
+        action: 'cycled',
+        origin: 'suggestion-exact',
+        originalText: raw.candidate,
+        at: Number.isFinite(raw.at) ? raw.at : Date.now(),
+      }
+    }
+    if (raw.kind === 'edited' && typeof raw.resultingText === 'string'
+      && raw.resultingText !== '') {
+      return {
+        sessionId: null,
+        action: 'cycled',
+        origin: 'suggestion-edited',
+        originalText: raw.candidate,
+        finalText: raw.resultingText,
+        at: Number.isFinite(raw.at) ? raw.at : Date.now(),
+      }
+    }
+    return undefined
+  }
+
   function readOutcomes() {
     try {
-      const parsed = JSON.parse(window.localStorage.getItem(STORAGE_KEY) || '[]')
-      return Array.isArray(parsed) ? parsed.slice(-config.maxLocalOutcomes) : []
+      const current = window.localStorage.getItem(STORAGE_KEY)
+      if (current !== null) {
+        const parsed = JSON.parse(current)
+        return Array.isArray(parsed) ? parsed.slice(-config.maxLocalOutcomes) : []
+      }
+      const legacy = JSON.parse(window.localStorage.getItem(LEGACY_STORAGE_KEY) || '[]')
+      const migrated = (Array.isArray(legacy) ? legacy : [])
+        .map(migrateLegacyOutcome)
+        .filter(Boolean)
+        .slice(-config.maxLocalOutcomes)
+      window.localStorage.setItem(STORAGE_KEY, JSON.stringify(migrated))
+      return migrated
     } catch {
       return []
     }
   }
 
-  function recordOutcome(candidate, kind, resultingText) {
-    if (typeof candidate !== 'string' || candidate === '') return
+  function recordOutcome(sessionId, outcome) {
+    if (!outcome || typeof outcome !== 'object'
+      || (outcome.action !== 'submitted' && outcome.action !== 'cycled')
+      || (outcome.origin !== 'manual' && outcome.origin !== 'suggestion-exact'
+        && outcome.origin !== 'suggestion-edited')) return
     const next = [...readOutcomes(), {
-      candidate,
-      kind,
-      ...(typeof resultingText === 'string' && resultingText !== '' ? { resultingText } : {}),
+      sessionId: typeof sessionId === 'string' && sessionId !== '' ? sessionId : null,
+      action: outcome.action,
+      origin: outcome.origin,
+      ...(typeof outcome.originalText === 'string' && outcome.originalText !== ''
+        ? { originalText: outcome.originalText }
+        : {}),
+      ...(typeof outcome.finalText === 'string' && outcome.finalText !== ''
+        ? { finalText: outcome.finalText }
+        : {}),
       at: Date.now(),
     }].slice(-config.maxLocalOutcomes)
     try {
@@ -238,7 +306,11 @@ module.exports = function createClientPlugin(React, options) {
     store.observedDraft = draft
     const candidate = activeCandidate(store)
     if (candidate !== undefined && draft === candidate) {
-      recordOutcome(candidate, 'cycled')
+      recordOutcome(sessionId, {
+        action: 'cycled',
+        origin: 'suggestion-exact',
+        originalText: candidate,
+      })
       if (store.index + 1 < store.candidates.length) {
         showCandidate(store, actions, store.index + 1)
         return
@@ -261,7 +333,12 @@ module.exports = function createClientPlugin(React, options) {
       return
     }
     if (candidate !== undefined && draft !== candidate) {
-      recordOutcome(candidate, 'edited', draft)
+      recordOutcome(sessionId, {
+        action: 'cycled',
+        origin: 'suggestion-edited',
+        originalText: candidate,
+        finalText: draft,
+      })
     }
     await requestBatch(sessionId, draft, [], actions, store, draft)
   }
@@ -269,7 +346,9 @@ module.exports = function createClientPlugin(React, options) {
   function observe(sessionId, draft, phase) {
     const store = storeFor(sessionId)
     const previousDraft = store.observedDraft
+    const enteringSubmission = phase === 'submitting' && store.observedPhase !== 'submitting'
     store.observedDraft = draft
+    store.observedPhase = phase
     let stateChanged = false
     const draftAck = store.awaitingDraftAck
     if (draftAck !== null && draft === draftAck.candidate) {
@@ -282,13 +361,32 @@ module.exports = function createClientPlugin(React, options) {
       stateChanged = true
     }
     const candidate = activeCandidate(store)
-    if (candidate !== undefined && phase === 'submitting') {
-      recordOutcome(candidate, draft === candidate ? 'submitted-exact' : 'submitted-edited', draft)
+    if (candidate !== undefined && enteringSubmission) {
+      recordOutcome(sessionId, {
+        action: 'submitted',
+        origin: draft === candidate ? 'suggestion-exact' : 'suggestion-edited',
+        originalText: candidate,
+        finalText: draft,
+      })
       cancelPending(store)
       store.candidates = []
       store.index = -1
       store.phase = 'idle'
       emit(store)
+    } else if (candidate === undefined && enteringSubmission) {
+      if (typeof draft === 'string' && draft.trim() !== '') {
+        recordOutcome(sessionId, {
+          action: 'submitted',
+          origin: 'manual',
+          finalText: draft,
+        })
+      }
+      const wasPending = store.pending
+      cancelPending(store)
+      if (wasPending) store.requestSeq += 1
+      store.phase = 'idle'
+      store.error = null
+      if (wasPending) emit(store)
     } else if (store.pending && candidate === undefined
       && previousDraft === store.sourceDraft && draft !== store.sourceDraft) {
       cancelPending(store)

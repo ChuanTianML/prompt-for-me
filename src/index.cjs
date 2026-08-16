@@ -124,7 +124,9 @@ async function historicalEvents(ctx, sessionId, config) {
       if (typeof id !== 'string' || id === sessionId) continue
       try {
         const snapshot = await query.readSession(id)
-        if (snapshot && Array.isArray(snapshot.events)) lists.push(snapshot.events)
+        if (snapshot && Array.isArray(snapshot.events)) {
+          lists.push({ sessionId: id, events: snapshot.events })
+        }
       } catch {
         // One unreadable historical session should not block current suggestions.
       }
@@ -291,13 +293,18 @@ function createGenerateStream(ctx, config, instrumentation = {}) {
         systemBytes: utf8Bytes(system),
         inputJsonBytes: utf8Bytes(inputJson),
         totalTextBytes: utf8Bytes(system) + utf8Bytes(inputJson),
-        draftBytes: utf8Bytes(input.currentDraft),
-        currentConversationItems: input.currentConversation.length,
-        currentConversationBytes: utf8Bytes(JSON.stringify(input.currentConversation)),
-        previousPromptItems: input.previousPrompts.length,
-        previousPromptBytes: utf8Bytes(JSON.stringify(input.previousPrompts)),
-        outcomeItems: input.previousSuggestionOutcomes.length,
-        outcomeBytes: utf8Bytes(JSON.stringify(input.previousSuggestionOutcomes)),
+        draftBytes: utf8Bytes(input.current.draft),
+        recentTurnItems: input.current.recentTurns.length,
+        recentTurnsBytes: utf8Bytes(JSON.stringify(input.current.recentTurns)),
+        currentEditedItems: input.currentSessionFeedback.editedSuggestions.length,
+        currentAcceptedItems: input.currentSessionFeedback.acceptedExact.length,
+        currentRejectedItems: input.currentSessionFeedback.rejectedSuggestions.length,
+        currentFeedbackBytes: utf8Bytes(JSON.stringify(input.currentSessionFeedback)),
+        preferenceManualItems: input.userPreferenceMemory.manualPrompts.length,
+        preferenceEditedItems: input.userPreferenceMemory.editedSuggestions.length,
+        preferenceAcceptedItems: input.userPreferenceMemory.acceptedExact.length,
+        preferenceRejectedItems: input.userPreferenceMemory.rejectedSuggestions.length,
+        preferenceMemoryBytes: utf8Bytes(JSON.stringify(input.userPreferenceMemory)),
         excludedItems: input.excludedCandidates.length,
         excludedBytes: utf8Bytes(JSON.stringify(input.excludedCandidates)),
       }

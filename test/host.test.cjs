@@ -50,7 +50,12 @@ test('generate reuses the session route and sends bounded contextual JSON withou
     sessionId: 'session-1',
     draft: 'Please inspect this.',
     excluded: [],
-    localOutcomes: [{ kind: 'cycled', candidate: 'Old suggestion' }],
+    localOutcomes: [{
+      sessionId: 'history-1',
+      action: 'cycled',
+      origin: 'suggestion-exact',
+      originalText: 'Old suggestion',
+    }],
   })
 
   assert.equal(result.ok, true)
@@ -61,9 +66,14 @@ test('generate reuses the session route and sends bounded contextual JSON withou
   assert.equal(requests[0].reasoningEffort, 'off')
   assert.equal(requests[0].tools, undefined)
   const framed = JSON.parse(requests[0].messages[0].content[0].text)
-  assert.equal(framed.currentDraft, 'Please inspect this.')
-  assert.deepEqual(framed.previousPrompts, [{ text: 'Keep changes small and run focused tests.' }])
-  assert.deepEqual(framed.previousSuggestionOutcomes, [{ kind: 'cycled', candidate: 'Old suggestion' }])
+  assert.equal(framed.current.draft, 'Please inspect this.')
+  assert.equal(framed.current.recentTurns.length, 1)
+  assert.deepEqual(framed.userPreferenceMemory.manualPrompts, [
+    { text: 'Keep changes small and run focused tests.' },
+  ])
+  assert.deepEqual(framed.userPreferenceMemory.rejectedSuggestions, [
+    { text: 'Old suggestion' },
+  ])
 })
 
 test('generate records token usage and privacy-safe stage metrics', async () => {
@@ -95,11 +105,21 @@ test('generate records token usage and privacy-safe stage metrics', async () => 
     inputTokens: 9000, totalInputTokens: 11000, outputTokens: 120,
     cacheReadTokens: 2000, reasoningTokens: 0,
   })
-  assert.equal(metrics[0].context.currentConversationItems, 1)
+  assert.equal(metrics[0].context.recentTurnItems, 1)
+  assert.equal(metrics[0].context.preferenceManualItems, 1)
+  assert.equal(metrics[0].context.currentEditedItems, 0)
   assert.equal(metrics[0].stages.candidateMs.length, 3)
   assert.equal(metrics[0].stages.modelFirstReasoningMs, null)
   assert.equal(JSON.stringify(metrics[0]).includes('private draft'), false)
   assert.equal(JSON.stringify(metrics[0]).includes('Fix the concurrency bug'), false)
+})
+
+test('historicalEvents retains session IDs for outcome correlation', async () => {
+  const { ctx } = contextWith(async function * () {})
+  const history = await host._testing.historicalEvents(ctx, 'session-1', resolveConfig({}))
+  assert.equal(history.length, 1)
+  assert.equal(history[0].sessionId, 'history-1')
+  assert.equal(history[0].events[0].data.content[0].text, 'Keep changes small and run focused tests.')
 })
 
 test('metrics store stays bounded and returns detached snapshots', () => {

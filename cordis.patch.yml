@@ -6,10 +6,15 @@
         candidateCount: 3
         maxCandidateBytes: 4096
         maxDraftBytes: 32768
-        maxCurrentContextBytes: 65536
+        maxCurrentTurns: 3
+        maxCurrentContextBytes: 16384
+        maxCurrentFeedbackBytes: 4096
+        maxPreferenceMemoryBytes: 8192
         maxHistorySessions: 20
-        maxHistoryMessages: 100
-        maxHistoryBytes: 65536
+        maxManualPrompts: 8
+        maxEditedSuggestions: 6
+        maxAcceptedExact: 6
+        maxRejectedSuggestions: 4
         maxLocalOutcomes: 50
         maxOutputTokens: 2048
         timeoutMs: 30000

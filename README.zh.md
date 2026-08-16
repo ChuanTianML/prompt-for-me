@@ -20,7 +20,7 @@ Prompt for Me 会根据 DeepSeek Harness 中有界的会话历史和本地建议
 推荐安装 Release 中已经构建好的 tarball，不需要执行构建脚本：
 
 ```sh
-dsh plugin --profile web add https://github.com/ChuanTianML/prompt-for-me/releases/download/v0.2.2/dsh-prompt-for-me-0.2.2.tgz
+dsh plugin --profile web add https://github.com/ChuanTianML/prompt-for-me/releases/download/v0.3.0/dsh-prompt-for-me-0.3.0.tgz
 ```
 
 安装后重启 `dsh web`。
@@ -28,7 +28,7 @@ dsh plugin --profile web add https://github.com/ChuanTianML/prompt-for-me/releas
 也可以安装固定 Git 标签：
 
 ```sh
-dsh plugin --profile web add github:ChuanTianML/prompt-for-me#v0.2.2
+dsh plugin --profile web add github:ChuanTianML/prompt-for-me#v0.3.0
 ```
 
 使用 pnpm 10 从 Git 安装时，可能需要在 Web profile 的 `pnpm-workspace.yaml` 中为 `allowBuilds` 添加 `dsh-prompt-for-me: true`，然后重新运行命令。`prepare` 脚本只复制 checkout 中的 Host 文件并包装 Client factory，不会下载任何内容。
@@ -59,24 +59,27 @@ dsh plugin --profile web remove dsh-prompt-for-me
 每次生成建议时，Host 可能把下列有界文本发送给当前选择的模型提供方：
 
 - 当前草稿；
-- 当前会话中近期的用户和助手文本；
-- 最多 20 个历史会话中的近期用户原始提示词；
-- 最多 50 条本地建议交互，如“换一条”“编辑”“原样提交”；
+- 当前会话最近 3 轮用户/助手文本；
+- 当前会话中的建议编辑、原样接受和拒绝记录；
+- 从最多 20 个历史会话的手写提示词和建议交互中提炼的偏好记忆；
 - 刚看过的一批候选，用于避免重复。
+
+当前草稿和最近 3 轮决定当前任务、意图和消息内容；当前会话反馈只调整眼前的表达；跨会话记忆只能影响长期的风格、详略和工作流偏好。手写提示词和编辑后的建议权重高于原样接受，拒绝记录只作为较弱的负向信号。
 
 常见 API Key、token、password 和 Bearer token 会在模型调用前替换为 `[REDACTED_SECRET]`。插件不会收集附件、工具参数、文件、凭证或二进制内容；没有分析上报服务，只会调用 Harness 已选择的模型路由。
 
-建议交互只保存在当前浏览器 `localStorage` 的 `dsh.prompt-for-me.outcomes.v1`。可在浏览器控制台清除：
+交互记录只保存在当前浏览器 `localStorage` 的 `dsh.prompt-for-me.outcomes.v2`，每条包含会话 ID、最终动作、来源以及相关的原文/最终文本。V1 记录会自动迁移，原记录不会删除。可在浏览器控制台同时清除两个版本：
 
 ```js
 localStorage.removeItem('dsh.prompt-for-me.outcomes.v1')
+localStorage.removeItem('dsh.prompt-for-me.outcomes.v2')
 ```
 
 DeepSeek Harness `0.1.0-rc.6` 尚未提供下游插件注册自定义持久化 session event 的公开接口。因此独立版不会把辅助模型请求和建议结果追加到 Harness session log；强行写入会导致原版运行时无法重新读取会话。这是独立版与实验性仓库内实现的主要差异，待官方开放事件注册接口后再补齐。
 
 生成 RPC 使用 NDJSON。每条候选只有在完整并通过校验后才会进入输入框；模型的半截 token 和不完整 JSON 不会写入草稿。鼠标悬停在 Sparkles 按钮上时，只显示当前动作和快捷键，例如“生成下一句（⌘⇧Space）”或“换一条（⌘⇧Space）”。
 
-辅助请求始终使用 `off` reasoning。模型收到一段系统指令，以及一条 JSON 用户消息；JSON 包含 `currentDraft`、有界的 `currentConversation` 用户/助手文本、有界的 `previousPrompts`、浏览器本地 `previousSuggestionOutcomes`，以及刚看过的 `excludedCandidates`。模型不会收到工具定义或附件。
+辅助请求始终使用 `off` reasoning。模型收到一段系统指令，以及一条包含 `current`、`currentSessionFeedback`、`userPreferenceMemory` 和 `excludedCandidates` 的 JSON 用户消息；不会收到工具定义或附件。
 
 Host 在内存中保留最近 50 条隐私安全的性能记录，并把每条记录以 `prompt-for-me metrics` 写入日志。记录包含模型路由、各类文本的字节数/条数、历史读取和输入组装耗时、首个模型增量/reasoning/text 的时间、每条候选到达时间、模型与请求总耗时，以及提供方返回的 token usage；不包含提示词、候选或交互结果正文。可查询当前进程：
 
@@ -95,11 +98,16 @@ curl -sS -X POST -H 'content-type: application/json' \
 | `candidateCount` | `3` | 每批必须返回的建议数量。 |
 | `maxCandidateBytes` | `4096` | 单条建议 UTF-8 上限。 |
 | `maxDraftBytes` | `32768` | 草稿或编辑结果 UTF-8 上限。 |
-| `maxCurrentContextBytes` | `65536` | 当前会话文本 JSON 预算。 |
+| `maxCurrentTurns` | `3` | 保留的当前会话最近轮数。 |
+| `maxCurrentContextBytes` | `16384` | 最近会话轮次的 JSON 预算。 |
+| `maxCurrentFeedbackBytes` | `4096` | 当前会话建议反馈的 JSON 预算。 |
+| `maxPreferenceMemoryBytes` | `8192` | 跨会话偏好记忆的 JSON 预算。 |
 | `maxHistorySessions` | `20` | 检查的历史会话数。 |
-| `maxHistoryMessages` | `100` | 保留的历史用户提示词数。 |
-| `maxHistoryBytes` | `65536` | 历史提示词 JSON 预算。 |
-| `maxLocalOutcomes` | `50` | 浏览器本地建议交互上限。 |
+| `maxManualPrompts` | `8` | 保留的历史手写提示词数。 |
+| `maxEditedSuggestions` | `6` | 每个反馈层保留的建议编辑对数。 |
+| `maxAcceptedExact` | `6` | 每个反馈层保留的原样接受数。 |
+| `maxRejectedSuggestions` | `4` | 每个反馈层保留的弱拒绝信号数。 |
+| `maxLocalOutcomes` | `50` | 浏览器本地交互记录上限。 |
 | `maxOutputTokens` | `2048` | 辅助模型输出预算。 |
 | `timeoutMs` | `30000` | 辅助模型调用超时。 |
 | `shortcut` | `Mod+Shift+Space` | 跨平台 Trigger，也可设为 `disabled`。 |

@@ -67,6 +67,13 @@ test('one trigger cycles locally and requests a new batch after exhaustion', asy
   assert.equal(storeDraft, 'D')
   assert.deepEqual(generator.calls[1].excluded, ['A', 'B', 'C'])
   assert.equal(generator.calls[1].draft, 'original')
+  assert.deepEqual(generator.calls[1].localOutcomes.map(({ sessionId, action, origin, originalText }) => ({
+    sessionId, action, origin, originalText,
+  })), [
+    { sessionId: 's1', action: 'cycled', origin: 'suggestion-exact', originalText: 'A' },
+    { sessionId: 's1', action: 'cycled', origin: 'suggestion-exact', originalText: 'B' },
+    { sessionId: 's1', action: 'cycled', origin: 'suggestion-exact', originalText: 'C' },
+  ])
 
   testing.observe('s1', storeDraft, 'idle')
   clock.advance()
@@ -194,7 +201,10 @@ test('rapid triggers advance at most once after the applied draft is acknowledge
   await testing.trigger('s1', 'A', actions)
   assert.equal(draft, 'B')
   assert.equal(generator.calls.length, 1)
-  assert.deepEqual(JSON.parse(values.get('dsh.prompt-for-me.outcomes.v1')).map((item) => item.candidate), ['A'])
+  assert.deepEqual(
+    JSON.parse(values.get('dsh.prompt-for-me.outcomes.v2')).map((item) => item.originalText),
+    ['A'],
+  )
 })
 
 test('editing while waiting for the next candidate prevents a late overwrite', async () => {
@@ -278,10 +288,92 @@ test('submission and cycling outcomes stay bounded in browser-local storage', as
   clock.advance()
   await plugin._testing.trigger('s1', draft, actions)
   plugin._testing.observe('s1', draft, 'submitting')
-  plugin._testing.recordOutcome('extra', 'edited', 'manual')
-  const records = JSON.parse(values.get('dsh.prompt-for-me.outcomes.v1'))
+  plugin._testing.recordOutcome('s2', {
+    action: 'cycled',
+    origin: 'suggestion-edited',
+    originalText: 'extra',
+    finalText: 'manual',
+  })
+  const records = JSON.parse(values.get('dsh.prompt-for-me.outcomes.v2'))
   assert.equal(records.length, 2)
-  assert.deepEqual(records.map((record) => record.kind), ['submitted-exact', 'edited'])
+  assert.deepEqual(records.map(({ sessionId, action, origin, originalText, finalText }) => ({
+    sessionId, action, origin, originalText, finalText,
+  })), [
+    {
+      sessionId: 's1', action: 'submitted', origin: 'suggestion-exact',
+      originalText: 'B', finalText: 'B',
+    },
+    {
+      sessionId: 's2', action: 'cycled', origin: 'suggestion-edited',
+      originalText: 'extra', finalText: 'manual',
+    },
+  ])
+})
+
+test('legacy V1 outcomes migrate once to session-aware V2 records', () => {
+  const values = browserStorage()
+  values.set('dsh.prompt-for-me.outcomes.v1', JSON.stringify([
+    { kind: 'submitted-exact', candidate: 'accepted', at: 1 },
+    { kind: 'submitted-edited', candidate: 'original', resultingText: 'edited', at: 2 },
+    { kind: 'cycled', candidate: 'rejected', at: 3 },
+    { kind: 'edited', candidate: 'rewritten', resultingText: 'new draft', at: 4 },
+  ]))
+  const plugin = createClientPlugin(React)
+
+  assert.deepEqual(plugin._testing.readOutcomes(), [
+    {
+      sessionId: null, action: 'submitted', origin: 'suggestion-exact',
+      originalText: 'accepted', finalText: 'accepted', at: 1,
+    },
+    {
+      sessionId: null, action: 'submitted', origin: 'suggestion-edited',
+      originalText: 'original', finalText: 'edited', at: 2,
+    },
+    {
+      sessionId: null, action: 'cycled', origin: 'suggestion-exact',
+      originalText: 'rejected', at: 3,
+    },
+    {
+      sessionId: null, action: 'cycled', origin: 'suggestion-edited',
+      originalText: 'rewritten', finalText: 'new draft', at: 4,
+    },
+  ])
+  assert.equal(values.has('dsh.prompt-for-me.outcomes.v1'), true)
+  assert.equal(values.has('dsh.prompt-for-me.outcomes.v2'), true)
+})
+
+test('manual and edited submissions record provenance once per submission transition', async () => {
+  const values = browserStorage()
+  const generator = batchGenerator([['A', 'B', 'C']])
+  const plugin = createClientPlugin(React, { generate: generator.generate })
+
+  plugin._testing.observe('manual-session', 'typed by user', 'idle')
+  plugin._testing.observe('manual-session', 'typed by user', 'submitting')
+  plugin._testing.observe('manual-session', 'typed by user', 'submitting')
+
+  let draft = ''
+  await plugin._testing.trigger('suggested-session', draft, {
+    setDraft: (value) => { draft = value },
+  })
+  plugin._testing.observe('suggested-session', draft, 'idle')
+  draft = 'A with a manual correction'
+  plugin._testing.observe('suggested-session', draft, 'idle')
+  plugin._testing.observe('suggested-session', draft, 'submitting')
+
+  const records = JSON.parse(values.get('dsh.prompt-for-me.outcomes.v2'))
+  assert.equal(records.length, 2)
+  assert.deepEqual(records.map(({ sessionId, action, origin, originalText, finalText }) => ({
+    sessionId, action, origin, originalText, finalText,
+  })), [
+    {
+      sessionId: 'manual-session', action: 'submitted', origin: 'manual',
+      originalText: undefined, finalText: 'typed by user',
+    },
+    {
+      sessionId: 'suggested-session', action: 'submitted', origin: 'suggestion-edited',
+      originalText: 'A', finalText: 'A with a manual correction',
+    },
+  ])
 })
 
 test('the portable shortcut accepts exactly one platform modifier', () => {
