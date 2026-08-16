@@ -1,0 +1,16 @@
+# Prompt for Me / Prompt 嘴替
+- insert:
+    - id: prompt-for-me
+      name: dsh-prompt-for-me
+      config:
+        candidateCount: 3
+        maxCandidateBytes: 4096
+        maxDraftBytes: 32768
+        maxCurrentContextBytes: 65536
+        maxHistorySessions: 20
+        maxHistoryMessages: 100
+        maxHistoryBytes: 65536
+        maxLocalOutcomes: 50
+        maxOutputTokens: 2048
+        timeoutMs: 30000
+        shortcut: Mod+Shift+Space
