@@ -33,11 +33,20 @@ function batchGenerator(batches, calls = []) {
   }
 }
 
+function controlledClock() {
+  let time = 1000
+  return {
+    advance(milliseconds = 251) { time += milliseconds },
+    now() { return time },
+  }
+}
+
 test('one trigger cycles locally and requests a new batch after exhaustion', async () => {
   browserStorage()
   const batches = [['A', 'B', 'C'], ['D', 'E', 'F'], ['G', 'H', 'I']]
   const generator = batchGenerator(batches)
-  const plugin = createClientPlugin(React, { generate: generator.generate })
+  const clock = controlledClock()
+  const plugin = createClientPlugin(React, { generate: generator.generate, now: clock.now })
   const actions = { setDraft(value) { storeDraft = value } }
   let storeDraft = 'original'
   const testing = plugin._testing
@@ -45,24 +54,30 @@ test('one trigger cycles locally and requests a new batch after exhaustion', asy
   await testing.trigger('s1', storeDraft, actions)
   assert.equal(storeDraft, 'A')
   testing.observe('s1', storeDraft, 'idle')
+  clock.advance()
   await testing.trigger('s1', storeDraft, actions)
   assert.equal(storeDraft, 'B')
   testing.observe('s1', storeDraft, 'idle')
+  clock.advance()
   await testing.trigger('s1', storeDraft, actions)
   assert.equal(storeDraft, 'C')
   testing.observe('s1', storeDraft, 'idle')
+  clock.advance()
   await testing.trigger('s1', storeDraft, actions)
   assert.equal(storeDraft, 'D')
   assert.deepEqual(generator.calls[1].excluded, ['A', 'B', 'C'])
   assert.equal(generator.calls[1].draft, 'original')
 
   testing.observe('s1', storeDraft, 'idle')
+  clock.advance()
   await testing.trigger('s1', storeDraft, actions)
   assert.equal(storeDraft, 'E')
   testing.observe('s1', storeDraft, 'idle')
+  clock.advance()
   await testing.trigger('s1', storeDraft, actions)
   assert.equal(storeDraft, 'F')
   testing.observe('s1', storeDraft, 'idle')
+  clock.advance()
   await testing.trigger('s1', storeDraft, actions)
   assert.equal(storeDraft, 'G')
   assert.deepEqual(generator.calls[2].excluded, ['D', 'E', 'F'])
@@ -124,7 +139,9 @@ test('trigger waits for the next progressive candidate when it is not ready yet'
   const next = new Promise((resolve) => { releaseNext = resolve })
   let firstVisible
   const visible = new Promise((resolve) => { firstVisible = resolve })
+  const clock = controlledClock()
   const plugin = createClientPlugin(React, {
+    now: clock.now,
     generate: async (args, onCandidate) => {
       await onCandidate('A')
       firstVisible()
@@ -138,12 +155,81 @@ test('trigger waits for the next progressive candidate when it is not ready yet'
   const actions = { setDraft: (value) => { draft = value } }
   const pending = plugin._testing.trigger('s1', draft, actions)
   await visible
+  plugin._testing.observe('s1', draft, 'idle')
+  clock.advance()
   await plugin._testing.trigger('s1', draft, actions)
   assert.equal(draft, 'A')
   assert.equal(plugin._testing.storeFor('s1').phase, 'loading')
   releaseNext()
   await pending
   assert.equal(draft, 'B')
+})
+
+test('rapid triggers advance at most once after the applied draft is acknowledged', async () => {
+  const values = browserStorage()
+  const clock = controlledClock()
+  const generator = batchGenerator([['A', 'B', 'C'], ['D', 'E', 'F']])
+  const plugin = createClientPlugin(React, { generate: generator.generate, now: clock.now })
+  let draft = 'original'
+  const actions = { setDraft: (value) => { draft = value } }
+  const testing = plugin._testing
+
+  await testing.trigger('s1', draft, actions)
+  assert.equal(draft, 'A')
+  await Promise.all([
+    testing.trigger('s1', 'original', actions),
+    testing.trigger('s1', 'original', actions),
+  ])
+  assert.equal(draft, 'A')
+  assert.equal(generator.calls.length, 1)
+
+  testing.observe('s1', draft, 'idle')
+  clock.advance(249)
+  await testing.trigger('s1', draft, actions)
+  assert.equal(draft, 'A')
+
+  clock.advance(1)
+  await testing.trigger('s1', draft, actions)
+  assert.equal(draft, 'B')
+  await testing.trigger('s1', 'A', actions)
+  assert.equal(draft, 'B')
+  assert.equal(generator.calls.length, 1)
+  assert.deepEqual(JSON.parse(values.get('dsh.prompt-for-me.outcomes.v1')).map((item) => item.candidate), ['A'])
+})
+
+test('editing while waiting for the next candidate prevents a late overwrite', async () => {
+  browserStorage()
+  const clock = controlledClock()
+  let releaseNext
+  const next = new Promise((resolve) => { releaseNext = resolve })
+  let firstVisible
+  const visible = new Promise((resolve) => { firstVisible = resolve })
+  const plugin = createClientPlugin(React, {
+    now: clock.now,
+    generate: async (args, onCandidate) => {
+      await onCandidate('A')
+      firstVisible()
+      await next
+      await onCandidate('B')
+      await onCandidate('C')
+      return { ok: true, batchId: 'batch-1' }
+    },
+  })
+  let draft = ''
+  const actions = { setDraft: (value) => { draft = value } }
+  const pending = plugin._testing.trigger('s1', draft, actions)
+  await visible
+  plugin._testing.observe('s1', draft, 'idle')
+  clock.advance()
+  await plugin._testing.trigger('s1', draft, actions)
+  draft = ''
+  plugin._testing.observe('s1', draft, 'idle')
+  releaseNext()
+  await pending
+
+  assert.equal(draft, '')
+  assert.equal(plugin._testing.storeFor('s1').awaitingNext, false)
+  assert.equal(plugin._testing.storeFor('s1').phase, 'ready')
 })
 
 test('a stale response never overwrites a draft edited while generation is running', async () => {
@@ -182,12 +268,14 @@ test('remote rejection becomes a retryable user-safe error', async () => {
 test('submission and cycling outcomes stay bounded in browser-local storage', async () => {
   const values = browserStorage()
   const generator = batchGenerator([['A', 'B', 'C']])
-  const plugin = createClientPlugin(React, { generate: generator.generate })
+  const clock = controlledClock()
+  const plugin = createClientPlugin(React, { generate: generator.generate, now: clock.now })
   plugin._testing.config.maxLocalOutcomes = 2
   let draft = ''
   const actions = { setDraft: (value) => { draft = value } }
   await plugin._testing.trigger('s1', draft, actions)
   plugin._testing.observe('s1', draft, 'idle')
+  clock.advance()
   await plugin._testing.trigger('s1', draft, actions)
   plugin._testing.observe('s1', draft, 'submitting')
   plugin._testing.recordOutcome('extra', 'edited', 'manual')
@@ -201,6 +289,7 @@ test('the portable shortcut accepts exactly one platform modifier', () => {
   const plugin = createClientPlugin(React, { rpc: async () => ({ ok: true }) })
   const matches = plugin._testing.shortcutMatches
   assert.equal(matches({ key: ' ', code: 'Space', shiftKey: true, metaKey: true, ctrlKey: false, altKey: false }), true)
+  assert.equal(matches({ key: ' ', code: 'Space', shiftKey: true, metaKey: true, ctrlKey: false, altKey: false, repeat: true }), false)
   assert.equal(matches({ key: ' ', code: 'Space', shiftKey: true, metaKey: false, ctrlKey: true, altKey: false }), true)
   assert.equal(matches({ key: ' ', code: 'Space', shiftKey: true, metaKey: true, ctrlKey: true, altKey: false }), false)
   assert.equal(matches({ key: ' ', code: 'Space', shiftKey: false, metaKey: true, ctrlKey: false, altKey: false }), false)

@@ -3,8 +3,14 @@
 module.exports = function createClientPlugin(React, options) {
   const RPC_PATH = '/dsh-prompt-for-me/rpc'
   const STORAGE_KEY = 'dsh.prompt-for-me.outcomes.v1'
+  const TRIGGER_COALESCE_MS = 250
   const stores = new Map()
   const config = { shortcut: 'Mod+Shift+Space', maxLocalOutcomes: 50 }
+  const now = options && typeof options.now === 'function'
+    ? options.now
+    : () => (typeof performance !== 'undefined' && typeof performance.now === 'function'
+        ? performance.now()
+        : Date.now())
   const rpc = options && typeof options.rpc === 'function'
     ? options.rpc
     : async (method, args) => {
@@ -92,6 +98,8 @@ module.exports = function createClientPlugin(React, options) {
         requestSeq: 0,
         pending: false,
         awaitingNext: false,
+        awaitingDraftAck: null,
+        lastAcceptedTriggerAt: null,
         controller: null,
         listeners: new Set(),
       }
@@ -141,6 +149,7 @@ module.exports = function createClientPlugin(React, options) {
     store.controller = null
     store.pending = false
     store.awaitingNext = false
+    store.awaitingDraftAck = null
   }
 
   function showCandidate(store, actions, index) {
@@ -150,7 +159,10 @@ module.exports = function createClientPlugin(React, options) {
     store.awaitingNext = false
     store.phase = 'ready'
     store.error = null
-    store.observedDraft = candidate
+    store.awaitingDraftAck = {
+      candidate,
+      previousDraft: store.observedDraft,
+    }
     setDraft(actions, candidate)
     emit(store)
     return true
@@ -205,7 +217,8 @@ module.exports = function createClientPlugin(React, options) {
       emit(store)
       return
     }
-    if (store.awaitingNext && !showCandidate(store, actions, store.index + 1)) {
+    if (store.awaitingNext && store.observedDraft === activeCandidate(store)
+      && !showCandidate(store, actions, store.index + 1)) {
       store.phase = 'error'
       store.error = 'Prompt for Me could not prepare another suggestion.'
     } else {
@@ -217,8 +230,12 @@ module.exports = function createClientPlugin(React, options) {
 
   async function trigger(sessionId, draft, actions) {
     const store = storeFor(sessionId)
+    if (store.phase === 'loading' || store.awaitingDraftAck !== null) return
+    const triggerAt = now()
+    if (store.lastAcceptedTriggerAt !== null
+      && triggerAt - store.lastAcceptedTriggerAt < TRIGGER_COALESCE_MS) return
+    store.lastAcceptedTriggerAt = triggerAt
     store.observedDraft = draft
-    if (store.phase === 'loading') return
     const candidate = activeCandidate(store)
     if (candidate !== undefined && draft === candidate) {
       recordOutcome(candidate, 'cycled')
@@ -253,6 +270,17 @@ module.exports = function createClientPlugin(React, options) {
     const store = storeFor(sessionId)
     const previousDraft = store.observedDraft
     store.observedDraft = draft
+    let stateChanged = false
+    const draftAck = store.awaitingDraftAck
+    if (draftAck !== null && draft === draftAck.candidate) {
+      store.awaitingDraftAck = null
+      stateChanged = true
+    } else if (draftAck !== null && draft !== draftAck.previousDraft) {
+      store.awaitingDraftAck = null
+      store.awaitingNext = false
+      if (phase !== 'adjudicating' && phase !== 'submitting') store.phase = 'ready'
+      stateChanged = true
+    }
     const candidate = activeCandidate(store)
     if (candidate !== undefined && phase === 'submitting') {
       recordOutcome(candidate, draft === candidate ? 'submitted-exact' : 'submitted-edited', draft)
@@ -269,13 +297,17 @@ module.exports = function createClientPlugin(React, options) {
       store.error = null
       emit(store)
     } else if (candidate !== undefined && previousDraft === candidate && draft !== candidate
-      && phase !== 'adjudicating' && phase !== 'submitting' && draft !== '') {
+      && phase !== 'adjudicating' && phase !== 'submitting') {
+      store.awaitingNext = false
       store.phase = 'ready'
+      emit(store)
+    } else if (stateChanged) {
+      emit(store)
     }
   }
 
   function shortcutMatches(event) {
-    if (config.shortcut === 'disabled') return false
+    if (config.shortcut === 'disabled' || event.repeat === true) return false
     return (event.key === ' ' || event.code === 'Space')
       && event.shiftKey === true
       && event.altKey !== true
@@ -385,6 +417,7 @@ module.exports = function createClientPlugin(React, options) {
     if (sessionId === undefined || !actions || typeof actions.setDraft !== 'function') return null
     const loading = store.phase === 'loading'
     const locked = phase === 'adjudicating' || phase === 'submitting'
+      || store.awaitingDraftAck !== null
     const zh = isChinese()
     const title = tooltipText(store, zh)
     const label = activeCandidate(store) === undefined

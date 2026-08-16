@@ -10,6 +10,7 @@ Prompt for Me (中文名：Prompt 嘴替) suggests the next message you may want
 - Uses the same Trigger for the whole flow: click the button or press `Mod+Shift+Space`.
 - Streams complete candidates progressively: the first validated suggestion enters the draft immediately while the other two continue generating in the background.
 - Cycles through the ready suggestions one by one. If the next candidate is still arriving, the same Trigger waits for it without starting a duplicate request.
+- Coalesces rapid repeated Triggers and ignores shortcut key-repeat, so one input burst advances at most one suggestion.
 - Requests a fresh batch after the current batch is exhausted. The new request excludes only the batch you just saw, so the flow can continue indefinitely without an ever-growing prompt.
 - Writes the selected suggestion into the draft. Press Enter to send, edit it first, delete it, or Trigger again for another suggestion.
 - Never bypasses Harness approvals, never invokes tools, and never sends a message automatically.
@@ -19,7 +20,7 @@ Prompt for Me (中文名：Prompt 嘴替) suggests the next message you may want
 The release tarball is the simplest option because it contains prebuilt Host and Client artifacts:
 
 ```sh
-dsh plugin --profile web add https://github.com/ChuanTianML/prompt-for-me/releases/download/v0.2.0/dsh-prompt-for-me-0.2.0.tgz
+dsh plugin --profile web add https://github.com/ChuanTianML/prompt-for-me/releases/download/v0.2.1/dsh-prompt-for-me-0.2.1.tgz
 ```
 
 Restart `dsh web` after installation.
@@ -27,7 +28,7 @@ Restart `dsh web` after installation.
 You may also install a pinned Git tag:
 
 ```sh
-dsh plugin --profile web add github:ChuanTianML/prompt-for-me#v0.2.0
+dsh plugin --profile web add github:ChuanTianML/prompt-for-me#v0.2.1
 ```
 
 pnpm 10 may ask you to allow the package's `prepare` script for a Git install. Add `dsh-prompt-for-me: true` under `allowBuilds` in the Web profile's `pnpm-workspace.yaml`, then run the command again. The script only copies the checked-out Host files and wraps the checked-out Client factory; it performs no downloads.
