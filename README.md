@@ -8,7 +8,8 @@ Prompt for Me (中文名：Prompt 嘴替) suggests the next message you may want
 
 - Adds one Sparkles button to the composer action row.
 - Uses the same Trigger for the whole flow: click the button or press `Mod+Shift+Space`.
-- Generates three suggestions on the first Trigger, then cycles through them one by one.
+- Streams complete candidates progressively: the first validated suggestion enters the draft immediately while the other two continue generating in the background.
+- Cycles through the ready suggestions one by one. If the next candidate is still arriving, the same Trigger waits for it without starting a duplicate request.
 - Requests a fresh batch after the current batch is exhausted. The new request excludes only the batch you just saw, so the flow can continue indefinitely without an ever-growing prompt.
 - Writes the selected suggestion into the draft. Press Enter to send, edit it first, delete it, or Trigger again for another suggestion.
 - Never bypasses Harness approvals, never invokes tools, and never sends a message automatically.
@@ -18,7 +19,7 @@ Prompt for Me (中文名：Prompt 嘴替) suggests the next message you may want
 The release tarball is the simplest option because it contains prebuilt Host and Client artifacts:
 
 ```sh
-dsh plugin --profile web add https://github.com/ChuanTianML/prompt-for-me/releases/download/v0.1.0/dsh-prompt-for-me-0.1.0.tgz
+dsh plugin --profile web add https://github.com/ChuanTianML/prompt-for-me/releases/download/v0.2.0/dsh-prompt-for-me-0.2.0.tgz
 ```
 
 Restart `dsh web` after installation.
@@ -26,7 +27,7 @@ Restart `dsh web` after installation.
 You may also install a pinned Git tag:
 
 ```sh
-dsh plugin --profile web add github:ChuanTianML/prompt-for-me#v0.1.0
+dsh plugin --profile web add github:ChuanTianML/prompt-for-me#v0.2.0
 ```
 
 pnpm 10 may ask you to allow the package's `prepare` script for a Git install. Add `dsh-prompt-for-me: true` under `allowBuilds` in the Web profile's `pnpm-workspace.yaml`, then run the command again. The script only copies the checked-out Host files and wraps the checked-out Client factory; it performs no downloads.
@@ -71,6 +72,8 @@ localStorage.removeItem('dsh.prompt-for-me.outcomes.v1')
 ```
 
 DeepSeek Harness `0.1.0-rc.6` does not expose downstream registration for custom durable session-event types. For that reason, the standalone plugin does not append its auxiliary model request or outcomes to the Harness session log; doing so would make persisted sessions unreadable to the stock runtime. This is the main difference from the experimental in-tree implementation and will be revisited when a public event-registration API exists.
+
+The generation RPC uses NDJSON. Each complete candidate is validated before it reaches the draft; partial model tokens and incomplete JSON never enter the composer. Hovering the Sparkles button shows only the current action and shortcut, such as `Generate next message (⌘⇧Space)` or `Try another (⌘⇧Space)`.
 
 ## Configuration
 

@@ -3,7 +3,7 @@
 const { randomUUID } = require('node:crypto')
 const {
   buildSuggestionInput,
-  parseCandidates,
+  parseCandidateLine,
   resolveConfig,
   systemPrompt,
   utf8Bytes,
@@ -105,29 +105,57 @@ async function historicalEvents(ctx, sessionId, config) {
   }
 }
 
-async function collectText(stream, abortController, maxBytes) {
-  let text = ''
+async function collectCandidates(stream, abortController, config, excluded, onCandidate) {
+  let buffered = ''
+  let outputBytes = 0
   let sawDelta = false
   let finish
   let toolCall = false
+  const blocked = new Set(excluded.map((value) => value.trim()))
+  const candidates = []
+
+  async function acceptLine(line) {
+    if (line.trim() === '' || candidates.length >= config.candidateCount) return
+    const candidate = parseCandidateLine(line, config)
+    if (blocked.has(candidate) || candidates.includes(candidate)) return
+    candidates.push(candidate)
+    await onCandidate(candidate, candidates.length - 1)
+  }
+
+  async function acceptText(text, flush = false) {
+    outputBytes += utf8Bytes(text)
+    if (outputBytes > config.maxCandidateBytes * config.candidateCount * 4) {
+      abortController.abort()
+      throw new Error('model-output-too-large')
+    }
+    buffered += text
+    let newline = buffered.indexOf('\n')
+    while (newline >= 0) {
+      const line = buffered.slice(0, newline).replace(/\r$/, '')
+      buffered = buffered.slice(newline + 1)
+      await acceptLine(line)
+      newline = buffered.indexOf('\n')
+    }
+    if (flush && buffered.trim() !== '') {
+      await acceptLine(buffered)
+      buffered = ''
+    }
+  }
+
   try {
     for await (const chunk of stream) {
       if (!chunk || typeof chunk !== 'object') continue
       if (chunk.type === 'text-delta' && typeof chunk.text === 'string') {
         sawDelta = true
-        text += chunk.text
+        await acceptText(chunk.text)
       } else if (!sawDelta && chunk.type === 'block-end'
         && chunk.block && chunk.block.type === 'text' && typeof chunk.block.text === 'string') {
-        text += chunk.block.text
+        await acceptText(chunk.block.text)
       } else if (chunk.type === 'tool-call' || chunk.type === 'tool-call-delta'
         || (chunk.type === 'block-end' && chunk.block && chunk.block.type === 'tool-call')) {
         toolCall = true
       } else if (chunk.type === 'finish') {
         finish = chunk.reason
-      }
-      if (utf8Bytes(text) > maxBytes) {
-        abortController.abort()
-        throw new Error('model-output-too-large')
       }
     }
   } finally {
@@ -139,15 +167,17 @@ async function collectText(stream, abortController, maxBytes) {
       }
     }
   }
+  await acceptText('', true)
   if (toolCall) throw new Error('model-returned-tool-call')
   if (finish && finish.kind && finish.kind !== 'stop') {
     throw new Error(`model-finished-${finish.kind}`)
   }
-  return text
+  if (candidates.length < config.candidateCount) throw new Error('model-output-too-few-candidates')
+  return candidates
 }
 
-function createGenerateHandler(ctx, config) {
-  return async function generate(args) {
+function createGenerateStream(ctx, config) {
+  return async function generate(args, onCandidate, requestSignal) {
     if (!args || typeof args !== 'object' || typeof args.sessionId !== 'string'
       || typeof args.draft !== 'string' || !Array.isArray(args.excluded)) {
       return { ok: false, code: 'BAD_REQUEST', message: 'sessionId, draft, and excluded are required' }
@@ -166,51 +196,70 @@ function createGenerateHandler(ctx, config) {
     if (!route) return { ok: false, code: 'NO_MODEL_ROUTE', message: 'No model is selected for this session.' }
 
     let timedOut = false
+    const controller = new AbortController()
+    const abortForRequest = () => controller.abort()
+    if (requestSignal) requestSignal.addEventListener('abort', abortForRequest, { once: true })
+    const timer = setTimeout(() => {
+      timedOut = true
+      controller.abort()
+    }, config.timeoutMs)
     try {
       const history = await historicalEvents(ctx, args.sessionId, config)
       const input = buildSuggestionInput(args, session.events, history, config)
-      const controller = new AbortController()
-      const timer = setTimeout(() => {
-        timedOut = true
-        controller.abort()
-      }, config.timeoutMs)
-      let stream
-      try {
-        stream = llm.stream({
-          provider: route.provider,
-          model: route.model,
-          sessionId: args.sessionId,
-          maxTokens: config.maxOutputTokens,
-          system: systemPrompt(config.candidateCount),
-          messages: [{
-            id: `prompt-for-me-${randomUUID()}`,
-            role: 'user',
-            content: [{ type: 'text', text: JSON.stringify(input) }],
-            source: { kind: 'plugin', plugin: 'dsh-prompt-for-me' },
-          }],
-          signal: controller.signal,
-        })
-        const text = await collectText(
-          stream,
-          controller,
-          config.maxCandidateBytes * config.candidateCount * 4,
-        )
-        const candidates = parseCandidates(text, config, input.excludedCandidates)
-        return { ok: true, batchId: randomUUID(), candidates }
-      } finally {
-        clearTimeout(timer)
-      }
+      const stream = llm.stream({
+        provider: route.provider,
+        model: route.model,
+        sessionId: args.sessionId,
+        maxTokens: config.maxOutputTokens,
+        system: systemPrompt(config.candidateCount),
+        messages: [{
+          id: `prompt-for-me-${randomUUID()}`,
+          role: 'user',
+          content: [{ type: 'text', text: JSON.stringify(input) }],
+          source: { kind: 'plugin', plugin: 'dsh-prompt-for-me' },
+        }],
+        signal: controller.signal,
+      })
+      const candidates = await collectCandidates(
+        stream,
+        controller,
+        config,
+        input.excludedCandidates,
+        async (candidate, index) => {
+          if (requestSignal && requestSignal.aborted) throw new Error('client-disconnected')
+          await onCandidate(candidate, index)
+        },
+      )
+      return { ok: true, batchId: randomUUID(), candidates }
     } catch (error) {
-      const code = timedOut ? 'TIMEOUT' : 'GENERATION_FAILED'
+      const code = requestSignal && requestSignal.aborted
+        ? 'CLIENT_DISCONNECTED'
+        : timedOut ? 'TIMEOUT' : 'GENERATION_FAILED'
       return {
         ok: false,
         code,
-        message: code === 'TIMEOUT'
+        message: code === 'CLIENT_DISCONNECTED'
+          ? 'The browser stopped this suggestion request.'
+          : code === 'TIMEOUT'
           ? 'Prompt for Me timed out.'
           : 'Prompt for Me could not generate a valid suggestion batch.',
       }
+    } finally {
+      clearTimeout(timer)
+      if (requestSignal) requestSignal.removeEventListener('abort', abortForRequest)
     }
   }
+}
+
+function createGenerateHandler(ctx, config) {
+  const generate = createGenerateStream(ctx, config)
+  return async (args) => generate(args, async () => {})
+}
+
+function writeNdjson(response, event) {
+  if (response.destroyed || response.writableEnded) return false
+  response.write(`${JSON.stringify(event)}\n`)
+  return true
 }
 
 function registerRoute(ctx, config) {
@@ -218,7 +267,7 @@ function registerRoute(ctx, config) {
   if (!webServer || typeof webServer.register !== 'function') {
     throw new Error('prompt-for-me: webServer service is unavailable')
   }
-  const generate = createGenerateHandler(ctx, config)
+  const generate = createGenerateStream(ctx, config)
   return webServer.register({
     kind: 'exact',
     path: RPC_PATH,
@@ -253,7 +302,31 @@ function registerRoute(ctx, config) {
         json(response, 404, { ok: false, code: 'UNKNOWN_METHOD' })
         return
       }
-      json(response, 200, await generate(body.args))
+      response.writeHead(200, {
+        'content-type': 'application/x-ndjson; charset=utf-8',
+        'cache-control': 'no-store',
+        'x-content-type-options': 'nosniff',
+      })
+      const requestController = new AbortController()
+      const abortRequest = () => {
+        if (!response.writableEnded) requestController.abort()
+      }
+      response.on('close', abortRequest)
+      try {
+        const result = await generate(body.args, async (candidate, index) => {
+          if (!writeNdjson(response, { type: 'candidate', index, candidate })) {
+            requestController.abort()
+          }
+        }, requestController.signal)
+        if (!response.destroyed && !response.writableEnded) {
+          writeNdjson(response, result.ok
+            ? { type: 'done', batchId: result.batchId, count: result.candidates.length }
+            : { type: 'error', code: result.code, message: result.message })
+          response.end()
+        }
+      } finally {
+        response.off('close', abortRequest)
+      }
     },
   })
 }
@@ -271,8 +344,9 @@ module.exports = {
     return registerRoute(ctx, config)
   },
   _testing: {
-    collectText,
+    collectCandidates,
     createGenerateHandler,
+    createGenerateStream,
     historicalEvents,
     readJson,
     resolveRoute,

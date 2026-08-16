@@ -15,6 +15,69 @@ module.exports = function createClientPlugin(React, options) {
         })
         return response.json()
       }
+  const streamGenerate = options && typeof options.generate === 'function'
+    ? options.generate
+    : async (args, onCandidate, signal) => {
+        const response = await window.fetch(RPC_PATH, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ method: 'generate', args }),
+          signal,
+        })
+        if (!response.ok) {
+          let failure
+          try {
+            failure = await response.json()
+          } catch {
+            failure = undefined
+          }
+          return {
+            ok: false,
+            message: failure && typeof failure.message === 'string'
+              ? failure.message
+              : 'Prompt for Me could not reach the Harness Host.',
+          }
+        }
+        if (!response.body || typeof response.body.getReader !== 'function') {
+          return { ok: false, message: 'Prompt for Me did not receive a suggestion stream.' }
+        }
+        const reader = response.body.getReader()
+        const decoder = new TextDecoder()
+        let buffered = ''
+        let completion
+
+        async function acceptLine(line) {
+          if (line.trim() === '') return
+          const event = JSON.parse(line)
+          if (event && event.type === 'candidate' && typeof event.candidate === 'string') {
+            await onCandidate(event.candidate)
+          } else if (event && event.type === 'done') {
+            completion = { ok: true, batchId: event.batchId }
+          } else if (event && event.type === 'error') {
+            completion = {
+              ok: false,
+              message: typeof event.message === 'string'
+                ? event.message
+                : 'Prompt for Me could not generate suggestions.',
+            }
+          }
+        }
+
+        while (true) {
+          const chunk = await reader.read()
+          buffered += decoder.decode(chunk.value || new Uint8Array(), { stream: !chunk.done })
+          let newline = buffered.indexOf('\n')
+          while (newline >= 0) {
+            const line = buffered.slice(0, newline).replace(/\r$/, '')
+            buffered = buffered.slice(newline + 1)
+            await acceptLine(line)
+            newline = buffered.indexOf('\n')
+          }
+          if (chunk.done) break
+        }
+        if (buffered.trim() !== '') await acceptLine(buffered)
+        return completion || { ok: false, message: 'Prompt for Me suggestion stream ended early.' }
+      }
 
   function storeFor(sessionId) {
     let store = stores.get(sessionId)
@@ -27,6 +90,9 @@ module.exports = function createClientPlugin(React, options) {
         sourceDraft: '',
         observedDraft: '',
         requestSeq: 0,
+        pending: false,
+        awaitingNext: false,
+        controller: null,
         listeners: new Set(),
       }
       stores.set(sessionId, store)
@@ -70,32 +136,68 @@ module.exports = function createClientPlugin(React, options) {
     if (actions && typeof actions.setDraft === 'function') actions.setDraft(text)
   }
 
+  function cancelPending(store) {
+    if (store.controller) store.controller.abort()
+    store.controller = null
+    store.pending = false
+    store.awaitingNext = false
+  }
+
+  function showCandidate(store, actions, index) {
+    const candidate = store.candidates[index]
+    if (candidate === undefined) return false
+    store.index = index
+    store.awaitingNext = false
+    store.phase = 'ready'
+    store.error = null
+    store.observedDraft = candidate
+    setDraft(actions, candidate)
+    emit(store)
+    return true
+  }
+
   async function requestBatch(sessionId, draft, excluded, actions, store, sourceDraft) {
+    cancelPending(store)
     store.phase = 'loading'
     store.error = null
+    store.candidates = []
+    store.index = -1
+    store.sourceDraft = sourceDraft
+    store.pending = true
     store.requestSeq += 1
     const seq = store.requestSeq
-    const expectedDraft = draft
+    const controller = new AbortController()
+    store.controller = controller
     emit(store)
     let result
     try {
-      result = await rpc('generate', {
+      result = await streamGenerate({
         sessionId,
         draft: sourceDraft,
         excluded,
         localOutcomes: readOutcomes(),
-      })
-    } catch {
+      }, async (candidate) => {
+        if (seq !== store.requestSeq || controller.signal.aborted
+          || typeof candidate !== 'string' || candidate.trim() === '') return
+        const normalized = candidate.trim()
+        if (store.candidates.includes(normalized)) return
+        store.candidates.push(normalized)
+        if (store.index < 0) {
+          if (store.observedDraft === draft) showCandidate(store, actions, 0)
+        } else if (store.awaitingNext && store.observedDraft === activeCandidate(store)) {
+          showCandidate(store, actions, store.index + 1)
+        } else {
+          emit(store)
+        }
+      }, controller.signal)
+    } catch (error) {
+      if (controller.signal.aborted) return
       result = { ok: false, message: 'Prompt for Me could not reach the Harness Host.' }
     }
-    if (seq !== store.requestSeq) return
-    if (store.observedDraft !== expectedDraft) {
-      store.phase = 'idle'
-      emit(store)
-      return
-    }
-    if (!result || result.ok !== true || !Array.isArray(result.candidates)
-      || result.candidates.length === 0) {
+    if (seq !== store.requestSeq || controller.signal.aborted) return
+    store.pending = false
+    store.controller = null
+    if (store.candidates.length === 0) {
       store.phase = 'error'
       store.error = result && typeof result.message === 'string'
         ? result.message
@@ -103,18 +205,12 @@ module.exports = function createClientPlugin(React, options) {
       emit(store)
       return
     }
-    store.phase = 'ready'
-    store.error = null
-    store.candidates = result.candidates.filter((value) => typeof value === 'string' && value.trim() !== '')
-    store.index = 0
-    store.sourceDraft = sourceDraft
-    const first = activeCandidate(store)
-    if (first === undefined) {
+    if (store.awaitingNext && !showCandidate(store, actions, store.index + 1)) {
       store.phase = 'error'
-      store.error = 'Prompt for Me returned an empty suggestion batch.'
+      store.error = 'Prompt for Me could not prepare another suggestion.'
     } else {
-      store.observedDraft = first
-      setDraft(actions, first)
+      store.phase = 'ready'
+      store.error = null
     }
     emit(store)
   }
@@ -127,10 +223,13 @@ module.exports = function createClientPlugin(React, options) {
     if (candidate !== undefined && draft === candidate) {
       recordOutcome(candidate, 'cycled')
       if (store.index + 1 < store.candidates.length) {
-        store.index += 1
-        const next = activeCandidate(store)
-        store.observedDraft = next
-        setDraft(actions, next)
+        showCandidate(store, actions, store.index + 1)
+        return
+      }
+      if (store.pending) {
+        store.awaitingNext = true
+        store.phase = 'loading'
+        store.error = null
         emit(store)
         return
       }
@@ -144,9 +243,9 @@ module.exports = function createClientPlugin(React, options) {
       )
       return
     }
-    if (candidate !== undefined && draft !== candidate) recordOutcome(candidate, 'edited', draft)
-    store.candidates = []
-    store.index = -1
+    if (candidate !== undefined && draft !== candidate) {
+      recordOutcome(candidate, 'edited', draft)
+    }
     await requestBatch(sessionId, draft, [], actions, store, draft)
   }
 
@@ -157,9 +256,17 @@ module.exports = function createClientPlugin(React, options) {
     const candidate = activeCandidate(store)
     if (candidate !== undefined && phase === 'submitting') {
       recordOutcome(candidate, draft === candidate ? 'submitted-exact' : 'submitted-edited', draft)
+      cancelPending(store)
       store.candidates = []
       store.index = -1
       store.phase = 'idle'
+      emit(store)
+    } else if (store.pending && candidate === undefined
+      && previousDraft === store.sourceDraft && draft !== store.sourceDraft) {
+      cancelPending(store)
+      store.requestSeq += 1
+      store.phase = 'idle'
+      store.error = null
       emit(store)
     } else if (candidate !== undefined && previousDraft === candidate && draft !== candidate
       && phase !== 'adjudicating' && phase !== 'submitting' && draft !== '') {
@@ -182,6 +289,30 @@ module.exports = function createClientPlugin(React, options) {
     } catch {
       return false
     }
+  }
+
+  function shortcutDisplay() {
+    if (config.shortcut === 'disabled') return ''
+    if (config.shortcut !== 'Mod+Shift+Space') return config.shortcut
+    try {
+      const platform = navigator.userAgentData && navigator.userAgentData.platform
+        ? navigator.userAgentData.platform
+        : navigator.platform
+      return /Mac|iPhone|iPad|iPod/i.test(platform) ? '⌘⇧Space' : 'Ctrl+Shift+Space'
+    } catch {
+      return 'Mod+Shift+Space'
+    }
+  }
+
+  function tooltipText(store, zh) {
+    if (store.phase === 'error') return zh ? '生成失败，点击重试' : 'Generation failed. Click to retry'
+    if (store.phase === 'loading') return zh ? '正在生成…' : 'Generating…'
+    const action = activeCandidate(store) === undefined
+      ? (zh ? '生成下一句' : 'Generate next message')
+      : (zh ? '换一条' : 'Try another')
+    const shortcut = shortcutDisplay()
+    if (shortcut === '') return action
+    return zh ? `${action}（${shortcut}）` : `${action} (${shortcut})`
   }
 
   const CSS = [
@@ -229,7 +360,11 @@ module.exports = function createClientPlugin(React, options) {
       store.listeners.add(listener)
       return () => {
         store.listeners.delete(listener)
-        if (store.listeners.size === 0 && store.phase !== 'loading') stores.delete(sessionId)
+        if (store.listeners.size === 0) {
+          cancelPending(store)
+          store.requestSeq += 1
+          stores.delete(sessionId)
+        }
       }
     }, [sessionId, store])
 
@@ -251,16 +386,16 @@ module.exports = function createClientPlugin(React, options) {
     const loading = store.phase === 'loading'
     const locked = phase === 'adjudicating' || phase === 'submitting'
     const zh = isChinese()
-    const title = store.error
-      || (activeCandidate(store) === undefined
-        ? (zh ? `帮我说（${config.shortcut}）` : `Prompt for Me (${config.shortcut})`)
-        : (zh ? `换一条（${config.shortcut}）` : `Try another (${config.shortcut})`))
+    const title = tooltipText(store, zh)
+    const label = activeCandidate(store) === undefined
+      ? (zh ? '生成下一句' : 'Generate next message')
+      : (zh ? '换一条' : 'Try another')
 
     return React.createElement('button', {
       type: 'button',
       className: 'dsh-pfm-button',
       title,
-      'aria-label': 'Prompt for Me',
+      'aria-label': label,
       'data-loading': String(loading),
       'data-error': String(store.phase === 'error'),
       disabled: loading || locked,
@@ -297,6 +432,7 @@ module.exports = function createClientPlugin(React, options) {
       recordOutcome,
       shortcutMatches,
       storeFor,
+      tooltipText,
       trigger,
     },
   }

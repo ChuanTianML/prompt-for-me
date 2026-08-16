@@ -10,6 +10,10 @@ function userEvent(text) {
   return { type: 'user/message', data: { content: [{ type: 'text', text }], source: { kind: 'user' } } }
 }
 
+function candidateLines(...candidates) {
+  return candidates.map(candidate => JSON.stringify({ candidate })).join('\n')
+}
+
 function contextWith(streamFactory) {
   const requests = []
   const session = {
@@ -38,7 +42,7 @@ function contextWith(streamFactory) {
 
 test('generate reuses the session route and sends bounded contextual JSON without tools', async () => {
   const { ctx, requests } = contextWith(async function * () {
-    yield { type: 'text-delta', text: '{"candidates":["A","B","C"]}' }
+    yield { type: 'text-delta', text: `${candidateLines('A', 'B', 'C')}\n` }
     yield { type: 'finish', reason: { kind: 'stop' } }
   })
   const generate = host._testing.createGenerateHandler(ctx, resolveConfig({}))
@@ -63,7 +67,7 @@ test('generate reuses the session route and sends bounded contextual JSON withou
 
 test('generate honors a fixed route override', async () => {
   const { ctx, requests } = contextWith(async function * () {
-    yield { type: 'text-delta', text: '{"candidates":["A","B","C"]}' }
+    yield { type: 'text-delta', text: candidateLines('A', 'B', 'C') }
   })
   const config = resolveConfig({ provider: 'fixed', model: 'fixed-model' })
   const result = await host._testing.createGenerateHandler(ctx, config)({
@@ -72,6 +76,33 @@ test('generate honors a fixed route override', async () => {
   assert.equal(result.ok, true)
   assert.equal(requests[0].provider, 'fixed')
   assert.equal(requests[0].model, 'fixed-model')
+})
+
+test('generate publishes the first complete candidate before the remaining batch', async () => {
+  let releaseRemaining
+  const remaining = new Promise((resolve) => { releaseRemaining = resolve })
+  const { ctx } = contextWith(async function * () {
+    yield { type: 'text-delta', text: `${candidateLines('A')}\n` }
+    await remaining
+    yield { type: 'text-delta', text: candidateLines('B', 'C') }
+  })
+  const generate = host._testing.createGenerateStream(ctx, resolveConfig({}))
+  const seen = []
+  let signalFirst
+  const first = new Promise((resolve) => { signalFirst = resolve })
+  const pending = generate({
+    sessionId: 'session-1', draft: '', excluded: [], localOutcomes: [],
+  }, async (candidate) => {
+    seen.push(candidate)
+    if (seen.length === 1) signalFirst()
+  })
+
+  await first
+  assert.deepEqual(seen, ['A'])
+  releaseRemaining()
+  const result = await pending
+  assert.equal(result.ok, true)
+  assert.deepEqual(seen, ['A', 'B', 'C'])
 })
 
 test('generate rejects stale sessions and invalid model output with user-safe errors', async () => {
@@ -113,14 +144,15 @@ test('generate reports a locally enforced model timeout', async () => {
   })
 })
 
-test('collectText rejects tool calls and non-stop finishes', async () => {
+test('collectCandidates rejects tool calls and non-stop finishes', async () => {
   const controller = new AbortController()
-  await assert.rejects(() => host._testing.collectText((async function * () {
+  const config = resolveConfig({})
+  await assert.rejects(() => host._testing.collectCandidates((async function * () {
     yield { type: 'tool-call' }
-  })(), controller, 1000), /tool-call/)
-  await assert.rejects(() => host._testing.collectText((async function * () {
+  })(), controller, config, [], async () => {}), /tool-call/)
+  await assert.rejects(() => host._testing.collectCandidates((async function * () {
     yield { type: 'finish', reason: { kind: 'max-tokens' } }
-  })(), controller, 1000), /max-tokens/)
+  })(), controller, config, [], async () => {}), /max-tokens/)
 })
 
 test('sameOrigin accepts same-host and non-browser requests and rejects cross-site origins', () => {
