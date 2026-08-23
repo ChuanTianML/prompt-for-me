@@ -90,6 +90,16 @@ function service(ctx, name) {
   return ctx && typeof ctx.get === 'function' ? ctx.get(name) : undefined
 }
 
+function automaticTurnIsCurrent(session, trigger) {
+  if (!session || !Array.isArray(session.events) || !trigger || trigger.kind !== 'automatic') return false
+  const lifecycle = [...session.events].reverse()
+    .find((event) => event && (event.type === 'turn/start' || event.type === 'turn/end'))
+  return Boolean(lifecycle && lifecycle.type === 'turn/end'
+    && lifecycle.seq === trigger.endSeq
+    && lifecycle.data && lifecycle.data.turn === trigger.turn
+    && lifecycle.data.reason && lifecycle.data.reason.kind === 'completed')
+}
+
 function resolveRoute(ctx, session, config) {
   if (config.provider !== undefined && config.model !== undefined) {
     return { provider: config.provider, model: config.model }
@@ -262,9 +272,14 @@ function createGenerateStream(ctx, config, instrumentation = {}) {
       finishMetric('error', code)
       return { ok: false, code, message }
     }
+    const manualTrigger = args && args.trigger && args.trigger.kind === 'manual'
+    const automaticTrigger = args && args.trigger && args.trigger.kind === 'automatic'
+      && Number.isSafeInteger(args.trigger.turn) && args.trigger.turn >= 0
+      && Number.isSafeInteger(args.trigger.endSeq) && args.trigger.endSeq >= 0
     if (!args || typeof args !== 'object' || typeof args.sessionId !== 'string'
-      || typeof args.draft !== 'string' || !Array.isArray(args.currentCycleSkipped)) {
-      return failure('BAD_REQUEST', 'sessionId, draft, and currentCycleSkipped are required')
+      || typeof args.draft !== 'string' || !Array.isArray(args.currentCycleSkipped)
+      || (!manualTrigger && !automaticTrigger)) {
+      return failure('BAD_REQUEST', 'sessionId, draft, trigger, and currentCycleSkipped are required')
     }
     if (utf8Bytes(args.draft) > config.maxDraftBytes) {
       return failure('DRAFT_TOO_LARGE', 'The composer draft is too large.')
@@ -272,6 +287,9 @@ function createGenerateStream(ctx, config, instrumentation = {}) {
     const sessions = service(ctx, 'sessions')
     const session = sessions && typeof sessions.get === 'function' ? sessions.get(args.sessionId) : undefined
     if (!session) return failure('SESSION_NOT_LIVE', 'This session is no longer active.')
+    if (automaticTrigger && !automaticTurnIsCurrent(session, args.trigger)) {
+      return failure('TURN_NOT_COMPLETED', 'The completed turn changed before automatic generation started.')
+    }
     const llm = service(ctx, 'llm')
     if (!llm || typeof llm.stream !== 'function') {
       return failure('NO_LLM', 'No Harness model route is available.')
@@ -347,6 +365,9 @@ function createGenerateStream(ctx, config, instrumentation = {}) {
         async (nextCandidate) => {
           metric.stages.candidateMs[0] = roundMs(now() - modelStarted)
           if (requestSignal && requestSignal.aborted) throw new Error('client-disconnected')
+          if (automaticTrigger && !automaticTurnIsCurrent(session, args.trigger)) {
+            throw new Error('automatic-turn-changed')
+          }
           await onCandidate(nextCandidate)
         },
         {
@@ -374,17 +395,24 @@ function createGenerateStream(ctx, config, instrumentation = {}) {
           },
         },
       )
+      if (automaticTrigger && !automaticTurnIsCurrent(session, args.trigger)) {
+        return failure('TURN_NOT_COMPLETED', 'The completed turn changed before the suggestion was ready.')
+      }
       metric.stages.modelTotalMs = roundMs(now() - modelStarted)
       finishMetric('ok', null)
       return { ok: true, requestId: randomUUID(), candidate }
     } catch (error) {
       if (modelStarted !== null) metric.stages.modelTotalMs = roundMs(now() - modelStarted)
-      const code = requestSignal && requestSignal.aborted
+      const code = error && error.message === 'automatic-turn-changed'
+        ? 'TURN_NOT_COMPLETED'
+        : requestSignal && requestSignal.aborted
         ? 'CLIENT_DISCONNECTED'
         : timedOut ? 'TIMEOUT' : 'GENERATION_FAILED'
       return failure(
         code,
-        code === 'CLIENT_DISCONNECTED'
+        code === 'TURN_NOT_COMPLETED'
+          ? 'The completed turn changed before the suggestion was ready.'
+          : code === 'CLIENT_DISCONNECTED'
           ? 'The browser stopped this suggestion request.'
           : code === 'TIMEOUT'
           ? 'Prompt for Me timed out.'
@@ -441,6 +469,7 @@ function registerRoute(ctx, config) {
         json(response, 200, {
           ok: true,
           shortcut: config.shortcut,
+          automatic: config.automatic,
           maxCurrentCycleSkipped: config.maxCurrentCycleSkipped,
           maxCurrentCycleSkippedBytes: config.maxCurrentCycleSkippedBytes,
           maxLocalOutcomes: config.maxLocalOutcomes,
@@ -502,6 +531,7 @@ module.exports = {
     createMetricsStore,
     createGenerateHandler,
     createGenerateStream,
+    automaticTurnIsCurrent,
     historicalEvents,
     normalizeCandidateIdentity,
     readJson,

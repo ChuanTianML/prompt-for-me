@@ -19,6 +19,7 @@ const React = {
   createElement: () => null,
   useEffect: () => {},
   useReducer: () => [0, () => {}],
+  useRef: (value) => ({ current: value }),
 }
 
 function suggestionGenerator(suggestions, calls = []) {
@@ -39,6 +40,209 @@ function controlledClock() {
     now() { return time },
   }
 }
+
+function input(draft = '', suggestion, extras = {}) {
+  return { draft, phase: 'plain', imageIds: [], queue: [], ...extras, ...(suggestion ? { suggestion } : {}) }
+}
+
+function session(turnEnds = new Map(), extras = {}) {
+  return { running: false, removed: false, turnEnds, ...extras }
+}
+
+function nextTask() {
+  return new Promise((resolve) => setImmediate(resolve))
+}
+
+test('a completed turn offers native ghost text without changing the draft', async () => {
+  const values = browserStorage()
+  const calls = []
+  const generator = suggestionGenerator(['Continue with the focused tests.'], calls)
+  const plugin = createClientPlugin(React, { generate: generator.generate, automatic: true })
+  let draft = ''
+  let ghost
+  const actions = {
+    setDraft: (value) => { draft = value },
+    offerSuggestion: (value) => { ghost = value; return true },
+    acceptSuggestion: (id) => {
+      if (!ghost || ghost.id !== id) return false
+      draft = ghost.text
+      ghost = undefined
+      return true
+    },
+    dismissSuggestion: (id) => {
+      if (!ghost || ghost.id !== id) return false
+      ghost = undefined
+      return true
+    },
+  }
+  plugin._testing.observe('s1', input(), session(), actions, true)
+  plugin._testing.observe('s1', input(), session(new Map([[2, 9]])), actions, true)
+  await nextTask()
+
+  assert.equal(draft, '')
+  assert.equal(ghost.text, 'Continue with the focused tests.')
+  assert.deepEqual(calls[0].trigger, { kind: 'automatic', turn: 2, endSeq: 9 })
+  assert.equal(plugin._testing.storeFor('s1').presentation, 'ghost')
+  plugin._testing.observe('s1', input('', ghost), session(new Map([[2, 9]])), actions, true)
+  assert.equal(actions.acceptSuggestion(ghost.id), true)
+  plugin._testing.observe('s1', input(draft), session(new Map([[2, 9]])), actions, true)
+  assert.equal(plugin._testing.storeFor('s1').presentation, 'draft')
+  assert.deepEqual(JSON.parse(values.get('dsh.prompt-for-me.outcomes.v2')), [])
+  plugin._testing.observe('s1', { ...input(draft), phase: 'submitting' }, session(new Map([[2, 9]])), actions, true)
+  assert.equal(JSON.parse(values.get('dsh.prompt-for-me.outcomes.v2'))[0].origin, 'suggestion-exact')
+})
+
+test('automatic preview falls back on older Harness clients and Use commits it', async () => {
+  browserStorage()
+  const plugin = createClientPlugin(React, {
+    generate: suggestionGenerator(['Fallback preview.']).generate,
+    automatic: true,
+  })
+  let draft = ''
+  const actions = { setDraft: (value) => { draft = value } }
+  plugin._testing.observe('s1', input(), session(), actions, true)
+  plugin._testing.observe('s1', input(), session(new Map([[1, 4]])), actions, true)
+  await nextTask()
+  const store = plugin._testing.storeFor('s1')
+  assert.equal(draft, '')
+  assert.equal(store.presentation, 'fallback')
+  assert.equal(plugin._testing.useFallback(store, actions), true)
+  assert.equal(draft, 'Fallback preview.')
+  assert.equal(store.presentation, 'draft')
+})
+
+test('typing hides a native ghost, clearing re-arms it, and Escape dismissal is neutral', async () => {
+  const values = browserStorage()
+  const plugin = createClientPlugin(React, {
+    generate: suggestionGenerator(['Re-arm me.']).generate,
+    automatic: true,
+  })
+  let ghost
+  const actions = {
+    setDraft() {},
+    offerSuggestion(value) { ghost = value; return true },
+    dismissSuggestion(id) { if (ghost && ghost.id === id) ghost = undefined; return true },
+  }
+  const completed = session(new Map([[1, 5]]))
+  plugin._testing.observe('s1', input(), session(), actions, true)
+  plugin._testing.observe('s1', input(), completed, actions, true)
+  await nextTask()
+  const firstGhost = ghost
+  plugin._testing.observe('s1', input('', firstGhost), completed, actions, true)
+  ghost = undefined
+  plugin._testing.observe('s1', input('u'), completed, actions, true)
+  assert.equal(plugin._testing.storeFor('s1').presentation, 'hidden')
+  plugin._testing.observe('s1', input(), completed, actions, true)
+  assert.equal(plugin._testing.storeFor('s1').presentation, 'ghost')
+  const rearmed = ghost
+  plugin._testing.observe('s1', input('', rearmed), completed, actions, true)
+  ghost = undefined
+  plugin._testing.observe('s1', input(), completed, actions, true)
+  assert.equal(plugin._testing.storeFor('s1').candidate, undefined)
+  assert.deepEqual(JSON.parse(values.get('dsh.prompt-for-me.outcomes.v2')), [])
+})
+
+test('running turns defer automatic generation and plan or semantic content suppresses it', async () => {
+  browserStorage()
+  const calls = []
+  const plugin = createClientPlugin(React, {
+    generate: suggestionGenerator(['Deferred.'], calls).generate,
+    automatic: true,
+  })
+  const actions = { setDraft() {}, offerSuggestion: () => true, dismissSuggestion: () => true }
+  plugin._testing.observe('s1', input(), session(), actions, true)
+  const running = session(new Map([[1, 8]]), { running: true })
+  plugin._testing.observe('s1', input(), running, actions, true)
+  assert.equal(calls.length, 0)
+  plugin._testing.observe('s1', input(), session(new Map([[1, 8]])), actions, true)
+  await nextTask()
+  assert.equal(calls.length, 1)
+
+  plugin._testing.observe('s2', input(), session(), actions, true)
+  plugin._testing.observe('s2', input(), session(new Map([[1, 3]])), actions, false)
+  plugin._testing.observe('s3', input(), session(), actions, true)
+  plugin._testing.observe('s3', input('', undefined, { imageIds: ['image'] }), session(new Map([[1, 3]])), actions, true)
+  await nextTask()
+  assert.equal(calls.length, 1)
+})
+
+test('the manual trigger supersedes pending automatic work and still fills directly', async () => {
+  browserStorage()
+  let releaseAutomatic
+  const automatic = new Promise((resolve) => { releaseAutomatic = resolve })
+  let call = 0
+  const plugin = createClientPlugin(React, {
+    automatic: true,
+    generate: async (args, onCandidate) => {
+      call += 1
+      if (call === 1) {
+        const candidate = await automatic
+        await onCandidate(candidate)
+        return { ok: true }
+      }
+      await onCandidate('Manual replacement.')
+      return { ok: true }
+    },
+  })
+  let draft = ''
+  let ghost
+  const actions = {
+    setDraft: (value) => { draft = value },
+    offerSuggestion: (value) => { ghost = value; return true },
+    dismissSuggestion: () => { ghost = undefined; return true },
+  }
+  plugin._testing.observe('s1', input(), session(), actions, true)
+  plugin._testing.observe('s1', input(), session(new Map([[1, 2]])), actions, true)
+  await plugin._testing.trigger('s1', draft, actions)
+  assert.equal(draft, 'Manual replacement.')
+  releaseAutomatic('Late automatic.')
+  await nextTask()
+  assert.equal(draft, 'Manual replacement.')
+  assert.equal(ghost, undefined)
+})
+
+test('the browser plugin registers native and fallback surfaces and accepts Host policy', async () => {
+  browserStorage()
+  global.document = {
+    querySelector: () => null,
+    createElement: () => ({ dataset: {}, textContent: '' }),
+    head: { appendChild() {} },
+  }
+  const registrations = []
+  const injected = []
+  const plugin = createClientPlugin(React, {
+    rpc: async () => ({
+      ok: true,
+      shortcut: 'disabled',
+      automatic: true,
+      maxCurrentCycleSkipped: 7,
+      maxCurrentCycleSkippedBytes: 2048,
+      maxLocalOutcomes: 20,
+      maxLocalOutcomesBytes: 4096,
+    }),
+  })
+  const slots = {
+    inject(name, install) {
+      injected.push(name)
+      install()
+    },
+    register(entry, component) {
+      registrations.push({ entry, component })
+      return () => {}
+    },
+  }
+  plugin.apply({ get: (name) => name === 'slots' ? slots : undefined })
+  await nextTask()
+
+  assert.deepEqual(injected, ['conversation.input.right', 'conversation.input.dock'])
+  assert.deepEqual(registrations.map(({ entry }) => [entry.name, entry.id]), [
+    ['conversation.input.right', 'prompt-for-me'],
+    ['conversation.input.dock', 'prompt-for-me-preview'],
+  ])
+  assert.equal(plugin._testing.config.automatic, true)
+  assert.equal(plugin._testing.config.maxCurrentCycleSkipped, 7)
+  delete global.document
+})
 
 test('each accepted trigger requests one suggestion with the skipped cycle so far', async () => {
   browserStorage()
@@ -225,8 +429,8 @@ test('editing while a replacement is generating prevents a late overwrite', asyn
   await pending
 
   assert.equal(draft, '')
-  assert.equal(plugin._testing.storeFor('s1').phase, 'ready')
-  assert.equal(plugin._testing.storeFor('s1').candidate, 'A')
+  assert.equal(plugin._testing.storeFor('s1').phase, 'idle')
+  assert.equal(plugin._testing.storeFor('s1').candidate, undefined)
 })
 
 test('a stale response never overwrites a draft edited while generation is running', async () => {

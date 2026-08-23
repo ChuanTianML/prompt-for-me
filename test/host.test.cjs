@@ -69,6 +69,7 @@ test('generate reuses the session route and sends bounded contextual JSON withou
   const result = await generate({
     sessionId: 'session-1',
     draft: 'Please inspect this.',
+    trigger: { kind: 'manual' },
     currentCycleSkipped: ['Already shown'],
     localOutcomes: [{
       sessionId: 'history-1',
@@ -101,6 +102,58 @@ test('generate reuses the session route and sends bounded contextual JSON withou
   assert.deepEqual(framed.currentCycleSkipped, ['Already shown'])
 })
 
+test('automatic generation is bound to the latest completed turn at both commit checks', async () => {
+  const first = contextWith(async function * () {
+    yield { type: 'text-delta', text: `${candidateLines('A')}\n` }
+    yield { type: 'finish', reason: { kind: 'stop' } }
+  })
+  first.session.events.push(
+    { type: 'turn/start', seq: 4, data: { turn: 1 } },
+    { type: 'turn/end', seq: 5, data: { turn: 1, reason: { kind: 'completed' } } },
+  )
+  const generate = host._testing.createGenerateHandler(first.ctx, resolveConfig({}))
+  assert.deepEqual(await generate({
+    sessionId: 'session-1',
+    draft: '',
+    trigger: { kind: 'automatic', turn: 1, endSeq: 6 },
+    currentCycleSkipped: [],
+    localOutcomes: [],
+  }), {
+    ok: false,
+    code: 'TURN_NOT_COMPLETED',
+    message: 'The completed turn changed before automatic generation started.',
+  })
+  assert.equal(first.requests.length, 0)
+  assert.equal((await generate({
+    sessionId: 'session-1',
+    draft: '',
+    trigger: { kind: 'automatic', turn: 1, endSeq: 5 },
+    currentCycleSkipped: [],
+    localOutcomes: [],
+  })).ok, true)
+
+  let racedSession
+  const raced = contextWith(async function * () {
+    racedSession.events.push({ type: 'turn/start', seq: 6, data: { turn: 2 } })
+    yield { type: 'text-delta', text: `${candidateLines('late')}\n` }
+  })
+  racedSession = raced.session
+  racedSession.events.push(
+    { type: 'turn/start', seq: 4, data: { turn: 1 } },
+    { type: 'turn/end', seq: 5, data: { turn: 1, reason: { kind: 'completed' } } },
+  )
+  const seen = []
+  const racedResult = await host._testing.createGenerateStream(raced.ctx, resolveConfig({}))({
+    sessionId: 'session-1',
+    draft: '',
+    trigger: { kind: 'automatic', turn: 1, endSeq: 5 },
+    currentCycleSkipped: [],
+    localOutcomes: [],
+  }, async (candidate) => { seen.push(candidate) })
+  assert.equal(racedResult.code, 'TURN_NOT_COMPLETED')
+  assert.deepEqual(seen, [])
+})
+
 test('generate records token usage and privacy-safe stage metrics', async () => {
   let time = 0
   const metrics = []
@@ -117,7 +170,7 @@ test('generate records token usage and privacy-safe stage metrics', async () => 
     record: (metric) => metrics.push(metric),
   })
   const result = await generate({
-    sessionId: 'session-1', draft: 'private draft', currentCycleSkipped: [], localOutcomes: [],
+    sessionId: 'session-1', draft: 'private draft', trigger: { kind: 'manual' }, currentCycleSkipped: [], localOutcomes: [],
   }, async () => {})
 
   assert.equal(result.ok, true)
@@ -156,7 +209,7 @@ test('generate rejects an empty draft without a direct human message', async () 
     userEvent('Skill catalog', { kind: 'skill-catalog' }),
   ]
   const result = await host._testing.createGenerateHandler(ctx, resolveConfig({}))({
-    sessionId: 'session-1', draft: '', currentCycleSkipped: [], localOutcomes: [],
+    sessionId: 'session-1', draft: '', trigger: { kind: 'manual' }, currentCycleSkipped: [], localOutcomes: [],
   })
   assert.deepEqual(result, {
     ok: false,
@@ -196,7 +249,7 @@ test('metrics failures never change a successful generation', async () => {
     record: () => { throw new Error('metrics unavailable') },
   })
   const result = await generate({
-    sessionId: 'session-1', draft: '', currentCycleSkipped: [], localOutcomes: [],
+    sessionId: 'session-1', draft: '', trigger: { kind: 'manual' }, currentCycleSkipped: [], localOutcomes: [],
   }, async () => {})
   assert.equal(result.ok, true)
 })
@@ -207,7 +260,7 @@ test('generate honors a fixed route override', async () => {
   })
   const config = resolveConfig({ provider: 'fixed', model: 'fixed-model' })
   const result = await host._testing.createGenerateHandler(ctx, config)({
-    sessionId: 'session-1', draft: '', currentCycleSkipped: [], localOutcomes: [],
+    sessionId: 'session-1', draft: '', trigger: { kind: 'manual' }, currentCycleSkipped: [], localOutcomes: [],
   })
   assert.equal(result.ok, true)
   assert.equal(requests[0].provider, 'fixed')
@@ -227,7 +280,7 @@ test('generate publishes the complete suggestion before the model finishes', asy
   let signalFirst
   const first = new Promise((resolve) => { signalFirst = resolve })
   const pending = generate({
-    sessionId: 'session-1', draft: '', currentCycleSkipped: [], localOutcomes: [],
+    sessionId: 'session-1', draft: '', trigger: { kind: 'manual' }, currentCycleSkipped: [], localOutcomes: [],
   }, async (candidate) => {
     seen.push(candidate)
     if (seen.length === 1) signalFirst()
@@ -247,14 +300,14 @@ test('generate rejects stale sessions and invalid model output with user-safe er
   })
   const generate = host._testing.createGenerateHandler(ctx, resolveConfig({}))
   assert.deepEqual(await generate({
-    sessionId: 'gone', draft: '', currentCycleSkipped: [],
+    sessionId: 'gone', draft: '', trigger: { kind: 'manual' }, currentCycleSkipped: [],
   }), {
     ok: false,
     code: 'SESSION_NOT_LIVE',
     message: 'This session is no longer active.',
   })
   assert.deepEqual(await generate({
-    sessionId: 'session-1', draft: '', currentCycleSkipped: [],
+    sessionId: 'session-1', draft: '', trigger: { kind: 'manual' }, currentCycleSkipped: [],
   }), {
     ok: false,
     code: 'GENERATION_FAILED',
@@ -278,7 +331,7 @@ test('generate reports a locally enforced model timeout', async () => {
   }))
   const generate = host._testing.createGenerateHandler(ctx, resolveConfig({ timeoutMs: 1 }))
   assert.deepEqual(await generate({
-    sessionId: 'session-1', draft: '', currentCycleSkipped: [],
+    sessionId: 'session-1', draft: '', trigger: { kind: 'manual' }, currentCycleSkipped: [],
   }), {
     ok: false,
     code: 'TIMEOUT',

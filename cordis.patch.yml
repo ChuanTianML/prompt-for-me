@@ -21,3 +21,4 @@
         maxOutputTokens: 2048
         timeoutMs: 30000
         shortcut: Mod+Shift+Space
+        automatic: true

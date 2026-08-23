@@ -26,6 +26,7 @@ const DEFAULT_CONFIG = Object.freeze({
   maxOutputTokens: 2048,
   timeoutMs: 30000,
   shortcut: 'Mod+Shift+Space',
+  automatic: true,
 })
 
 function integer(name, value, minimum) {
@@ -60,6 +61,9 @@ function resolveConfig(input) {
   integer('timeoutMs', config.timeoutMs, 1)
   if (typeof config.shortcut !== 'string' || config.shortcut.trim() === '') {
     throw new TypeError('prompt-for-me: shortcut must be a non-empty string or "disabled"')
+  }
+  if (typeof config.automatic !== 'boolean') {
+    throw new TypeError('prompt-for-me: automatic must be a boolean')
   }
   if ((config.provider === undefined) !== (config.model === undefined)) {
     throw new TypeError('prompt-for-me: provider and model must be configured together')

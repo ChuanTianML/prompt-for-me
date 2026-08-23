@@ -38,12 +38,14 @@ test('resolveConfig supplies the three-tier defaults and rejects invalid limits 
   assert.equal(config.maxPreferenceMemoryBytes, 8192)
   assert.equal(config.maxLocalOutcomesBytes, 131072)
   assert.equal(config.shortcut, 'Mod+Shift+Space')
+  assert.equal(config.automatic, true)
   assert.throws(() => core.resolveConfig({ provider: 'deepseek' }), /configured together/)
   assert.throws(() => core.resolveConfig({ maxCurrentCycleSkipped: 0 }), /maxCurrentCycleSkipped/)
   assert.throws(() => core.resolveConfig({ maxCurrentCycleSkippedBytes: 100 }), /maxCurrentCycleSkippedBytes/)
   assert.throws(() => core.resolveConfig({ maxCurrentFeedbackBytes: 100 }), /maxCurrentFeedbackBytes/)
   assert.throws(() => core.resolveConfig({ maxLocalOutcomesBytes: 100 }), /maxLocalOutcomesBytes/)
   assert.throws(() => core.resolveConfig({ timeoutMs: 0 }), /timeoutMs/)
+  assert.throws(() => core.resolveConfig({ automatic: 'yes' }), /automatic/)
 })
 
 test('redactSecrets removes common credential forms', () => {
