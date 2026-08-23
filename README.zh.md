@@ -60,11 +60,11 @@ dsh plugin --profile web remove dsh-prompt-for-me
 
 - 当前草稿；
 - 当前会话最近 3 轮真人用户/助手文本；
-- 当前会话中的建议编辑、原样接受和拒绝记录；
-- 从最多 20 个历史会话的手写提示词和建议交互中提炼的偏好记忆；
+- 当前会话中已发送的建议编辑、原样接受和拒绝记录；
+- 来自最多 20 个历史会话的手写提示词和建议交互原始样本；
 - 本轮最多 10 条已经跳过的建议，用于让模型避免重复或改写复述。
 
-当前草稿和最近 3 轮决定当前任务、意图和消息内容；当前会话反馈只调整眼前的表达；跨会话记忆只能影响长期的风格、详略和工作流偏好。手写提示词和编辑后的建议权重高于原样接受，拒绝记录只作为较弱的负向信号。
+当前草稿和最近 3 轮决定当前任务、意图和消息内容；当前会话反馈只调整眼前的表达；跨会话记忆只能影响长期的风格、详略和工作流偏好。手写提示词和编辑后发送的建议权重高于原样接受，拒绝记录只作为较弱的负向信号。编辑建议后再次 Trigger 会拒绝原建议，但不会把尚未发送的编辑结果当成正向偏好。
 
 Harness 会把工作区指令、运行时上下文和 Skill 列表记录为用户角色事件；插件会从会话轮次和偏好记忆中排除这些非真人来源。如果草稿与真人会话均为空，插件会在调用模型前停止生成。
 
@@ -100,6 +100,7 @@ curl -sS -X POST -H 'content-type: application/json' \
 | `maxCandidateBytes` | `4096` | 单条建议 UTF-8 上限。 |
 | `maxDraftBytes` | `32768` | 草稿或编辑结果 UTF-8 上限。 |
 | `maxCurrentCycleSkipped` | `10` | 作为下一次 Trigger 强负向上下文保留的已跳过建议数。 |
+| `maxCurrentCycleSkippedBytes` | `16384` | 当前周期已跳过建议共享的 JSON 预算。 |
 | `maxCurrentTurns` | `3` | 保留的当前会话最近轮数。 |
 | `maxCurrentContextBytes` | `16384` | 最近会话轮次的 JSON 预算。 |
 | `maxCurrentFeedbackBytes` | `4096` | 当前会话建议反馈的 JSON 预算。 |
@@ -110,6 +111,7 @@ curl -sS -X POST -H 'content-type: application/json' \
 | `maxAcceptedExact` | `6` | 每个反馈层保留的原样接受数。 |
 | `maxRejectedSuggestions` | `4` | 每个反馈层保留的弱拒绝信号数。 |
 | `maxLocalOutcomes` | `50` | 浏览器本地交互记录上限。 |
+| `maxLocalOutcomesBytes` | `131072` | 浏览器本地记录及其 RPC 副本共享的 JSON 预算。 |
 | `maxOutputTokens` | `2048` | 辅助模型输出预算。 |
 | `timeoutMs` | `30000` | 辅助模型调用超时。 |
 | `shortcut` | `Mod+Shift+Space` | 跨平台 Trigger，也可设为 `disabled`。 |

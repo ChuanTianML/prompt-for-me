@@ -90,6 +90,26 @@ test('the current-cycle skipped window stays bounded', async () => {
   assert.deepEqual(generator.calls[3].currentCycleSkipped, ['B', 'C'])
 })
 
+test('the current-cycle skipped byte budget keeps the most recent suggestions', async () => {
+  browserStorage()
+  const suggestions = ['a', 'b', 'c', 'd'].map((letter) => letter.repeat(100))
+  const generator = suggestionGenerator(suggestions)
+  const clock = controlledClock()
+  const plugin = createClientPlugin(React, { generate: generator.generate, now: clock.now })
+  plugin._testing.config.maxCurrentCycleSkipped = 10
+  plugin._testing.config.maxCurrentCycleSkippedBytes = 256
+  let draft = 'original'
+  const actions = { setDraft: (value) => { draft = value } }
+
+  for (let index = 0; index < 4; index += 1) {
+    await plugin._testing.trigger('s1', draft, actions)
+    plugin._testing.observe('s1', draft, 'idle')
+    clock.advance()
+  }
+
+  assert.deepEqual(generator.calls[3].currentCycleSkipped, [suggestions[1], suggestions[2]])
+})
+
 test('the complete suggestion reaches the draft before the request finishes', async () => {
   browserStorage()
   let releaseRemaining
@@ -277,6 +297,86 @@ test('retrying a failed replacement does not record the same skip twice', async 
   )
 })
 
+test('retrying after editing a suggestion records one rejection and keeps the edited draft', async () => {
+  const values = browserStorage()
+  const clock = controlledClock()
+  const calls = []
+  const plugin = createClientPlugin(React, {
+    now: clock.now,
+    generate: async (args, onCandidate) => {
+      calls.push(args)
+      if (calls.length === 1) {
+        await onCandidate('A')
+        return { ok: true, requestId: 'request-1' }
+      }
+      if (calls.length === 2) return { ok: false, message: 'temporary failure' }
+      await onCandidate('B')
+      return { ok: true, requestId: 'request-3' }
+    },
+  })
+  let draft = 'original'
+  const actions = { setDraft: (value) => { draft = value } }
+
+  await plugin._testing.trigger('s1', draft, actions)
+  plugin._testing.observe('s1', draft, 'idle')
+  draft = 'edited but not submitted'
+  plugin._testing.observe('s1', draft, 'idle')
+  clock.advance()
+  await plugin._testing.trigger('s1', draft, actions)
+  clock.advance()
+  await plugin._testing.trigger('s1', draft, actions)
+
+  assert.equal(draft, 'B')
+  assert.deepEqual(calls.slice(1).map(({ draft: requestDraft, currentCycleSkipped }) => ({
+    draft: requestDraft,
+    currentCycleSkipped,
+  })), [
+    { draft: 'edited but not submitted', currentCycleSkipped: ['A'] },
+    { draft: 'edited but not submitted', currentCycleSkipped: ['A'] },
+  ])
+  assert.deepEqual(JSON.parse(values.get('dsh.prompt-for-me.outcomes.v2')).map((record) => ({
+    sessionId: record.sessionId,
+    action: record.action,
+    origin: record.origin,
+    originalText: record.originalText,
+  })), [{
+    sessionId: 's1',
+    action: 'cycled',
+    origin: 'suggestion-exact',
+    originalText: 'A',
+  }])
+})
+
+test('clearing a suggestion before triggering still records its rejection', async () => {
+  const values = browserStorage()
+  const generator = suggestionGenerator(['A', 'B'])
+  const clock = controlledClock()
+  const plugin = createClientPlugin(React, { generate: generator.generate, now: clock.now })
+  let draft = 'original'
+  const actions = { setDraft: (value) => { draft = value } }
+
+  await plugin._testing.trigger('s1', draft, actions)
+  plugin._testing.observe('s1', draft, 'idle')
+  draft = ''
+  plugin._testing.observe('s1', draft, 'idle')
+  clock.advance()
+  await plugin._testing.trigger('s1', draft, actions)
+
+  assert.equal(draft, 'B')
+  assert.deepEqual(generator.calls[1].currentCycleSkipped, ['A'])
+  assert.deepEqual(JSON.parse(values.get('dsh.prompt-for-me.outcomes.v2')).map((record) => ({
+    action: record.action,
+    origin: record.origin,
+    originalText: record.originalText,
+    finalText: record.finalText,
+  })), [{
+    action: 'cycled',
+    origin: 'suggestion-exact',
+    originalText: 'A',
+    finalText: undefined,
+  }])
+})
+
 test('submission and cycling outcomes stay bounded in browser-local storage', async () => {
   const values = browserStorage()
   const generator = suggestionGenerator(['A', 'B'])
@@ -310,6 +410,33 @@ test('submission and cycling outcomes stay bounded in browser-local storage', as
       originalText: 'extra', finalText: 'manual',
     },
   ])
+})
+
+test('zero local outcomes disables persistence and the byte budget keeps recent records', () => {
+  const values = browserStorage()
+  values.set('dsh.prompt-for-me.outcomes.v2', JSON.stringify([{
+    sessionId: 'old', action: 'submitted', origin: 'manual', finalText: 'old', at: 1,
+  }]))
+  const plugin = createClientPlugin(React)
+
+  plugin._testing.config.maxLocalOutcomes = 0
+  assert.deepEqual(plugin._testing.readOutcomes(), [])
+  plugin._testing.recordOutcome('disabled', {
+    action: 'submitted', origin: 'manual', finalText: 'must not persist',
+  })
+  assert.deepEqual(JSON.parse(values.get('dsh.prompt-for-me.outcomes.v2')), [])
+
+  plugin._testing.config.maxLocalOutcomes = 10
+  plugin._testing.config.maxLocalOutcomesBytes = 256
+  for (const sessionId of ['one', 'two', 'three']) {
+    plugin._testing.recordOutcome(sessionId, {
+      action: 'submitted', origin: 'manual', finalText: sessionId.repeat(20),
+    })
+  }
+  const records = JSON.parse(values.get('dsh.prompt-for-me.outcomes.v2'))
+  assert.ok(new TextEncoder().encode(JSON.stringify(records)).byteLength <= 256)
+  assert.equal(records.at(-1).sessionId, 'three')
+  assert.ok(records.length < 3)
 })
 
 test('legacy V1 outcomes migrate once to session-aware V2 records', () => {

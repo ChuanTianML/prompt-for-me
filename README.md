@@ -60,11 +60,11 @@ On each generation request, the Host may send these bounded text fields to the s
 
 - the current draft;
 - the last three direct-human/assistant turns from the current session;
-- current-session suggestion edits, exact accepts, and rejected suggestions;
-- preference memory derived from manual prompts and suggestion interactions in up to 20 earlier sessions;
+- current-session submitted suggestion edits, exact accepts, and rejected suggestions;
+- bounded raw examples from manual prompts and suggestion interactions in up to 20 earlier sessions;
 - up to ten suggestions skipped during the current cycle, so the model can avoid repeating or paraphrasing them.
 
-The current draft and recent turns determine the task, intent, and message content. Current-session feedback adjusts the immediate wording. Cross-session memory may influence only durable style, detail, and workflow preferences. Manual prompts and edited suggestions carry more weight than exact accepts; rejected suggestions are weak negative evidence.
+The current draft and recent turns determine the task, intent, and message content. Current-session feedback adjusts the immediate wording. Cross-session memory may influence only durable style, detail, and workflow preferences. Manual prompts and submitted suggestion edits carry more weight than exact accepts; rejected suggestions are weak negative evidence. Editing a suggestion and triggering again rejects the original suggestion but does not treat the unsubmitted edit as a positive preference.
 
 Harness records injected workspace instructions, runtime context, and skill catalogs in user-role events. The plugin excludes these non-human sources from conversation turns and preference memory. If both the draft and direct-human conversation are empty, generation stops before the model call.
 
@@ -100,6 +100,7 @@ All generation limits are configurable in `cordis.patch.yml`:
 | `maxCandidateBytes` | `4096` | UTF-8 limit per suggestion. |
 | `maxDraftBytes` | `32768` | UTF-8 limit for a draft or edited outcome. |
 | `maxCurrentCycleSkipped` | `10` | Skipped suggestions retained as hard negative context for the next Trigger. |
+| `maxCurrentCycleSkippedBytes` | `16384` | Shared JSON budget for suggestions skipped during the current cycle. |
 | `maxCurrentTurns` | `3` | Most recent current-session turns retained. |
 | `maxCurrentContextBytes` | `16384` | JSON budget for the retained turns. |
 | `maxCurrentFeedbackBytes` | `4096` | JSON budget for current-session suggestion feedback. |
@@ -110,6 +111,7 @@ All generation limits are configurable in `cordis.patch.yml`:
 | `maxAcceptedExact` | `6` | Exact accepts retained per feedback tier. |
 | `maxRejectedSuggestions` | `4` | Weak rejection signals retained per feedback tier. |
 | `maxLocalOutcomes` | `50` | Browser-local interaction records retained. |
+| `maxLocalOutcomesBytes` | `131072` | Shared JSON budget for browser-local records and their RPC copy. |
 | `maxOutputTokens` | `2048` | Auxiliary model output budget. |
 | `timeoutMs` | `30000` | Auxiliary model-call timeout. |
 | `shortcut` | `Mod+Shift+Space` | Portable Trigger, or `disabled`. |

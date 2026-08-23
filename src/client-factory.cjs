@@ -9,7 +9,9 @@ module.exports = function createClientPlugin(React, options) {
   const config = {
     shortcut: 'Mod+Shift+Space',
     maxCurrentCycleSkipped: 10,
+    maxCurrentCycleSkippedBytes: 16384,
     maxLocalOutcomes: 50,
+    maxLocalOutcomesBytes: 131072,
   }
   const now = options && typeof options.now === 'function'
     ? options.now
@@ -166,18 +168,43 @@ module.exports = function createClientPlugin(React, options) {
     return undefined
   }
 
+  function jsonBytes(value) {
+    return new TextEncoder().encode(JSON.stringify(value)).byteLength
+  }
+
+  function takeRecentWithinBudget(value, maxItems, maxBytes) {
+    if (!Array.isArray(value) || maxItems === 0) return []
+    const selected = []
+    for (let index = value.length - 1; index >= 0 && selected.length < maxItems; index -= 1) {
+      const candidate = [value[index], ...selected]
+      if (jsonBytes(candidate) <= maxBytes) selected.unshift(value[index])
+    }
+    return selected
+  }
+
+  function boundedOutcomes(value) {
+    return takeRecentWithinBudget(
+      value,
+      config.maxLocalOutcomes,
+      config.maxLocalOutcomesBytes,
+    )
+  }
+
   function readOutcomes() {
     try {
       const current = window.localStorage.getItem(STORAGE_KEY)
       if (current !== null) {
         const parsed = JSON.parse(current)
-        return Array.isArray(parsed) ? parsed.slice(-config.maxLocalOutcomes) : []
+        const bounded = boundedOutcomes(parsed)
+        if (JSON.stringify(parsed) !== JSON.stringify(bounded)) {
+          window.localStorage.setItem(STORAGE_KEY, JSON.stringify(bounded))
+        }
+        return bounded
       }
       const legacy = JSON.parse(window.localStorage.getItem(LEGACY_STORAGE_KEY) || '[]')
-      const migrated = (Array.isArray(legacy) ? legacy : [])
+      const migrated = boundedOutcomes((Array.isArray(legacy) ? legacy : [])
         .map(migrateLegacyOutcome)
-        .filter(Boolean)
-        .slice(-config.maxLocalOutcomes)
+        .filter(Boolean))
       window.localStorage.setItem(STORAGE_KEY, JSON.stringify(migrated))
       return migrated
     } catch {
@@ -190,7 +217,7 @@ module.exports = function createClientPlugin(React, options) {
       || (outcome.action !== 'submitted' && outcome.action !== 'cycled')
       || (outcome.origin !== 'manual' && outcome.origin !== 'suggestion-exact'
         && outcome.origin !== 'suggestion-edited')) return
-    const next = [...readOutcomes(), {
+    const next = boundedOutcomes([...readOutcomes(), {
       sessionId: typeof sessionId === 'string' && sessionId !== '' ? sessionId : null,
       action: outcome.action,
       origin: outcome.origin,
@@ -201,7 +228,7 @@ module.exports = function createClientPlugin(React, options) {
         ? { finalText: outcome.finalText }
         : {}),
       at: Date.now(),
-    }].slice(-config.maxLocalOutcomes)
+    }])
     try {
       window.localStorage.setItem(STORAGE_KEY, JSON.stringify(next))
     } catch {
@@ -240,12 +267,11 @@ module.exports = function createClientPlugin(React, options) {
 
   function rememberSkipped(store, candidate) {
     if (!store.currentCycleSkipped.includes(candidate)) store.currentCycleSkipped.push(candidate)
-    if (store.currentCycleSkipped.length > config.maxCurrentCycleSkipped) {
-      store.currentCycleSkipped.splice(
-        0,
-        store.currentCycleSkipped.length - config.maxCurrentCycleSkipped,
-      )
-    }
+    store.currentCycleSkipped = takeRecentWithinBudget(
+      store.currentCycleSkipped,
+      config.maxCurrentCycleSkipped,
+      config.maxCurrentCycleSkippedBytes,
+    )
   }
 
   async function requestSuggestion(sessionId, draft, actions, store) {
@@ -315,14 +341,15 @@ module.exports = function createClientPlugin(React, options) {
       return
     }
     if (candidate !== undefined && draft !== candidate) {
-      recordOutcome(sessionId, {
-        action: 'cycled',
-        origin: 'suggestion-edited',
-        originalText: candidate,
-        finalText: draft,
-      })
-      rememberSkipped(store, candidate)
-      store.candidateSkipped = true
+      if (!store.candidateSkipped) {
+        recordOutcome(sessionId, {
+          action: 'cycled',
+          origin: 'suggestion-exact',
+          originalText: candidate,
+        })
+        rememberSkipped(store, candidate)
+        store.candidateSkipped = true
+      }
       store.sourceDraft = draft
     } else {
       store.sourceDraft = draft
@@ -539,8 +566,16 @@ module.exports = function createClientPlugin(React, options) {
             && result.maxCurrentCycleSkipped >= 1) {
             config.maxCurrentCycleSkipped = result.maxCurrentCycleSkipped
           }
+          if (Number.isSafeInteger(result.maxCurrentCycleSkippedBytes)
+            && result.maxCurrentCycleSkippedBytes >= 256) {
+            config.maxCurrentCycleSkippedBytes = result.maxCurrentCycleSkippedBytes
+          }
           if (Number.isSafeInteger(result.maxLocalOutcomes) && result.maxLocalOutcomes >= 0) {
             config.maxLocalOutcomes = result.maxLocalOutcomes
+          }
+          if (Number.isSafeInteger(result.maxLocalOutcomesBytes)
+            && result.maxLocalOutcomesBytes >= 256) {
+            config.maxLocalOutcomesBytes = result.maxLocalOutcomesBytes
           }
         }
       }).catch(() => {})

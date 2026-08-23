@@ -6,6 +6,7 @@
         maxCandidateBytes: 4096
         maxDraftBytes: 32768
         maxCurrentCycleSkipped: 10
+        maxCurrentCycleSkippedBytes: 16384
         maxCurrentTurns: 3
         maxCurrentContextBytes: 16384
         maxCurrentFeedbackBytes: 4096
@@ -16,6 +17,7 @@
         maxAcceptedExact: 6
         maxRejectedSuggestions: 4
         maxLocalOutcomes: 50
+        maxLocalOutcomesBytes: 131072
         maxOutputTokens: 2048
         timeoutMs: 30000
         shortcut: Mod+Shift+Space
