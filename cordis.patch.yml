@@ -3,9 +3,9 @@
     - id: prompt-for-me
       name: dsh-prompt-for-me
       config:
-        candidateCount: 3
         maxCandidateBytes: 4096
         maxDraftBytes: 32768
+        maxCurrentCycleSkipped: 10
         maxCurrentTurns: 3
         maxCurrentContextBytes: 16384
         maxCurrentFeedbackBytes: 4096

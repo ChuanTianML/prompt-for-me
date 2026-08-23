@@ -21,14 +21,13 @@ const React = {
   useReducer: () => [0, () => {}],
 }
 
-function batchGenerator(batches, calls = []) {
+function suggestionGenerator(suggestions, calls = []) {
   return {
     calls,
     generate: async (args, onCandidate) => {
       calls.push(args)
-      const batch = batches[calls.length - 1]
-      for (const candidate of batch) await onCandidate(candidate)
-      return { ok: true, batchId: `batch-${calls.length}` }
+      await onCandidate(suggestions[calls.length - 1])
+      return { ok: true, requestId: `request-${calls.length}` }
     },
   }
 }
@@ -41,10 +40,9 @@ function controlledClock() {
   }
 }
 
-test('one trigger cycles locally and requests a new batch after exhaustion', async () => {
+test('each accepted trigger requests one suggestion with the skipped cycle so far', async () => {
   browserStorage()
-  const batches = [['A', 'B', 'C'], ['D', 'E', 'F'], ['G', 'H', 'I']]
-  const generator = batchGenerator(batches)
+  const generator = suggestionGenerator(['A', 'B', 'C'])
   const clock = controlledClock()
   const plugin = createClientPlugin(React, { generate: generator.generate, now: clock.now })
   const actions = { setDraft(value) { storeDraft = value } }
@@ -57,40 +55,42 @@ test('one trigger cycles locally and requests a new batch after exhaustion', asy
   clock.advance()
   await testing.trigger('s1', storeDraft, actions)
   assert.equal(storeDraft, 'B')
+  assert.equal(generator.calls.length, 2)
+  assert.equal(generator.calls[1].draft, 'original')
+  assert.deepEqual(generator.calls[1].currentCycleSkipped, ['A'])
   testing.observe('s1', storeDraft, 'idle')
   clock.advance()
   await testing.trigger('s1', storeDraft, actions)
   assert.equal(storeDraft, 'C')
-  testing.observe('s1', storeDraft, 'idle')
-  clock.advance()
-  await testing.trigger('s1', storeDraft, actions)
-  assert.equal(storeDraft, 'D')
-  assert.deepEqual(generator.calls[1].excluded, ['A', 'B', 'C'])
-  assert.equal(generator.calls[1].draft, 'original')
-  assert.deepEqual(generator.calls[1].localOutcomes.map(({ sessionId, action, origin, originalText }) => ({
+  assert.equal(generator.calls.length, 3)
+  assert.deepEqual(generator.calls[2].currentCycleSkipped, ['A', 'B'])
+  assert.deepEqual(generator.calls[2].localOutcomes.map(({ sessionId, action, origin, originalText }) => ({
     sessionId, action, origin, originalText,
   })), [
     { sessionId: 's1', action: 'cycled', origin: 'suggestion-exact', originalText: 'A' },
     { sessionId: 's1', action: 'cycled', origin: 'suggestion-exact', originalText: 'B' },
-    { sessionId: 's1', action: 'cycled', origin: 'suggestion-exact', originalText: 'C' },
   ])
-
-  testing.observe('s1', storeDraft, 'idle')
-  clock.advance()
-  await testing.trigger('s1', storeDraft, actions)
-  assert.equal(storeDraft, 'E')
-  testing.observe('s1', storeDraft, 'idle')
-  clock.advance()
-  await testing.trigger('s1', storeDraft, actions)
-  assert.equal(storeDraft, 'F')
-  testing.observe('s1', storeDraft, 'idle')
-  clock.advance()
-  await testing.trigger('s1', storeDraft, actions)
-  assert.equal(storeDraft, 'G')
-  assert.deepEqual(generator.calls[2].excluded, ['D', 'E', 'F'])
 })
 
-test('the first complete candidate reaches the draft before the batch finishes', async () => {
+test('the current-cycle skipped window stays bounded', async () => {
+  browserStorage()
+  const generator = suggestionGenerator(['A', 'B', 'C', 'D'])
+  const clock = controlledClock()
+  const plugin = createClientPlugin(React, { generate: generator.generate, now: clock.now })
+  plugin._testing.config.maxCurrentCycleSkipped = 2
+  let draft = 'original'
+  const actions = { setDraft: (value) => { draft = value } }
+
+  for (let index = 0; index < 4; index += 1) {
+    await plugin._testing.trigger('s1', draft, actions)
+    plugin._testing.observe('s1', draft, 'idle')
+    clock.advance()
+  }
+
+  assert.deepEqual(generator.calls[3].currentCycleSkipped, ['B', 'C'])
+})
+
+test('the complete suggestion reaches the draft before the request finishes', async () => {
   browserStorage()
   let releaseRemaining
   const remaining = new Promise((resolve) => { releaseRemaining = resolve })
@@ -101,9 +101,7 @@ test('the first complete candidate reaches the draft before the batch finishes',
       await onCandidate('A')
       firstVisible()
       await remaining
-      await onCandidate('B')
-      await onCandidate('C')
-      return { ok: true, batchId: 'batch-1' }
+      return { ok: true, requestId: 'request-1' }
     },
   })
   let draft = 'original'
@@ -114,20 +112,21 @@ test('the first complete candidate reaches the draft before the batch finishes',
   await visible
   assert.equal(draft, 'A')
   assert.equal(plugin._testing.storeFor('s1').pending, true)
+  assert.equal(plugin._testing.storeFor('s1').phase, 'loading')
   releaseRemaining()
   await pending
-  assert.deepEqual(plugin._testing.storeFor('s1').candidates, ['A', 'B', 'C'])
+  assert.equal(plugin._testing.storeFor('s1').candidate, 'A')
+  assert.equal(plugin._testing.storeFor('s1').phase, 'ready')
 })
 
-test('the browser transport parses candidates across arbitrary NDJSON chunks', async () => {
+test('the browser transport parses one suggestion across arbitrary NDJSON chunks', async () => {
   browserStorage()
   const encoder = new TextEncoder()
   window.fetch = async () => new Response(new ReadableStream({
     start(controller) {
-      controller.enqueue(encoder.encode('{"type":"candidate","index":0,"candi'))
-      controller.enqueue(encoder.encode('date":"A"}\n{"type":"candidate","index":1,"candidate":"B"}\n'))
-      controller.enqueue(encoder.encode('{"type":"candidate","index":2,"candidate":"C"}\n'))
-      controller.enqueue(encoder.encode('{"type":"done","batchId":"batch-1","count":3}\n'))
+      controller.enqueue(encoder.encode('{"type":"candidate","candi'))
+      controller.enqueue(encoder.encode('date":"A"}\n'))
+      controller.enqueue(encoder.encode('{"type":"done","requestId":"request-1"}\n'))
       controller.close()
     },
   }), { status: 200, headers: { 'content-type': 'application/x-ndjson' } })
@@ -137,45 +136,13 @@ test('the browser transport parses candidates across arbitrary NDJSON chunks', a
     setDraft: (value) => { draft = value },
   })
   assert.equal(draft, 'A')
-  assert.deepEqual(plugin._testing.storeFor('s1').candidates, ['A', 'B', 'C'])
+  assert.equal(plugin._testing.storeFor('s1').candidate, 'A')
 })
 
-test('trigger waits for the next progressive candidate when it is not ready yet', async () => {
-  browserStorage()
-  let releaseNext
-  const next = new Promise((resolve) => { releaseNext = resolve })
-  let firstVisible
-  const visible = new Promise((resolve) => { firstVisible = resolve })
-  const clock = controlledClock()
-  const plugin = createClientPlugin(React, {
-    now: clock.now,
-    generate: async (args, onCandidate) => {
-      await onCandidate('A')
-      firstVisible()
-      await next
-      await onCandidate('B')
-      await onCandidate('C')
-      return { ok: true, batchId: 'batch-1' }
-    },
-  })
-  let draft = ''
-  const actions = { setDraft: (value) => { draft = value } }
-  const pending = plugin._testing.trigger('s1', draft, actions)
-  await visible
-  plugin._testing.observe('s1', draft, 'idle')
-  clock.advance()
-  await plugin._testing.trigger('s1', draft, actions)
-  assert.equal(draft, 'A')
-  assert.equal(plugin._testing.storeFor('s1').phase, 'loading')
-  releaseNext()
-  await pending
-  assert.equal(draft, 'B')
-})
-
-test('rapid triggers advance at most once after the applied draft is acknowledged', async () => {
+test('rapid triggers start at most one request after the applied draft is acknowledged', async () => {
   const values = browserStorage()
   const clock = controlledClock()
-  const generator = batchGenerator([['A', 'B', 'C'], ['D', 'E', 'F']])
+  const generator = suggestionGenerator(['A', 'B'])
   const plugin = createClientPlugin(React, { generate: generator.generate, now: clock.now })
   let draft = 'original'
   const actions = { setDraft: (value) => { draft = value } }
@@ -200,46 +167,46 @@ test('rapid triggers advance at most once after the applied draft is acknowledge
   assert.equal(draft, 'B')
   await testing.trigger('s1', 'A', actions)
   assert.equal(draft, 'B')
-  assert.equal(generator.calls.length, 1)
+  assert.equal(generator.calls.length, 2)
   assert.deepEqual(
     JSON.parse(values.get('dsh.prompt-for-me.outcomes.v2')).map((item) => item.originalText),
     ['A'],
   )
 })
 
-test('editing while waiting for the next candidate prevents a late overwrite', async () => {
+test('editing while a replacement is generating prevents a late overwrite', async () => {
   browserStorage()
   const clock = controlledClock()
-  let releaseNext
-  const next = new Promise((resolve) => { releaseNext = resolve })
-  let firstVisible
-  const visible = new Promise((resolve) => { firstVisible = resolve })
+  let releaseReplacement
+  const replacement = new Promise((resolve) => { releaseReplacement = resolve })
+  let calls = 0
   const plugin = createClientPlugin(React, {
     now: clock.now,
     generate: async (args, onCandidate) => {
-      await onCandidate('A')
-      firstVisible()
-      await next
+      calls += 1
+      if (calls === 1) {
+        await onCandidate('A')
+        return { ok: true, requestId: 'request-1' }
+      }
+      await replacement
       await onCandidate('B')
-      await onCandidate('C')
-      return { ok: true, batchId: 'batch-1' }
+      return { ok: true, requestId: 'request-2' }
     },
   })
   let draft = ''
   const actions = { setDraft: (value) => { draft = value } }
-  const pending = plugin._testing.trigger('s1', draft, actions)
-  await visible
+  await plugin._testing.trigger('s1', draft, actions)
   plugin._testing.observe('s1', draft, 'idle')
   clock.advance()
-  await plugin._testing.trigger('s1', draft, actions)
+  const pending = plugin._testing.trigger('s1', draft, actions)
   draft = ''
   plugin._testing.observe('s1', draft, 'idle')
-  releaseNext()
+  releaseReplacement()
   await pending
 
   assert.equal(draft, '')
-  assert.equal(plugin._testing.storeFor('s1').awaitingNext, false)
   assert.equal(plugin._testing.storeFor('s1').phase, 'ready')
+  assert.equal(plugin._testing.storeFor('s1').candidate, 'A')
 })
 
 test('a stale response never overwrites a draft edited while generation is running', async () => {
@@ -248,8 +215,8 @@ test('a stale response never overwrites a draft edited while generation is runni
   const pending = new Promise((done) => { resolve = done })
   const plugin = createClientPlugin(React, {
     generate: async (args, onCandidate) => {
-      const candidates = await pending
-      for (const candidate of candidates) await onCandidate(candidate)
+      const candidate = await pending
+      await onCandidate(candidate)
       return { ok: true }
     },
   })
@@ -258,7 +225,7 @@ test('a stale response never overwrites a draft edited while generation is runni
     setDraft: (value) => writes.push(value),
   })
   plugin._testing.observe('s1', 'manual edit', 'idle')
-  resolve(['A', 'B', 'C'])
+  resolve('A')
   await request
   assert.deepEqual(writes, [])
   assert.equal(plugin._testing.storeFor('s1').phase, 'idle')
@@ -275,9 +242,44 @@ test('remote rejection becomes a retryable user-safe error', async () => {
   assert.equal(store.error, 'Prompt for Me could not reach the Harness Host.')
 })
 
+test('retrying a failed replacement does not record the same skip twice', async () => {
+  const values = browserStorage()
+  const clock = controlledClock()
+  const calls = []
+  const plugin = createClientPlugin(React, {
+    now: clock.now,
+    generate: async (args, onCandidate) => {
+      calls.push(args)
+      if (calls.length === 1) {
+        await onCandidate('A')
+        return { ok: true, requestId: 'request-1' }
+      }
+      if (calls.length === 2) return { ok: false, message: 'temporary failure' }
+      await onCandidate('B')
+      return { ok: true, requestId: 'request-3' }
+    },
+  })
+  let draft = 'original'
+  const actions = { setDraft: (value) => { draft = value } }
+
+  await plugin._testing.trigger('s1', draft, actions)
+  plugin._testing.observe('s1', draft, 'idle')
+  clock.advance()
+  await plugin._testing.trigger('s1', draft, actions)
+  clock.advance()
+  await plugin._testing.trigger('s1', draft, actions)
+
+  assert.equal(draft, 'B')
+  assert.deepEqual(calls[2].currentCycleSkipped, ['A'])
+  assert.deepEqual(
+    JSON.parse(values.get('dsh.prompt-for-me.outcomes.v2')).map((item) => item.originalText),
+    ['A'],
+  )
+})
+
 test('submission and cycling outcomes stay bounded in browser-local storage', async () => {
   const values = browserStorage()
-  const generator = batchGenerator([['A', 'B', 'C']])
+  const generator = suggestionGenerator(['A', 'B'])
   const clock = controlledClock()
   const plugin = createClientPlugin(React, { generate: generator.generate, now: clock.now })
   plugin._testing.config.maxLocalOutcomes = 2
@@ -344,7 +346,7 @@ test('legacy V1 outcomes migrate once to session-aware V2 records', () => {
 
 test('manual and edited submissions record provenance once per submission transition', async () => {
   const values = browserStorage()
-  const generator = batchGenerator([['A', 'B', 'C']])
+  const generator = suggestionGenerator(['A'])
   const plugin = createClientPlugin(React, { generate: generator.generate })
 
   plugin._testing.observe('manual-session', 'typed by user', 'idle')
@@ -398,8 +400,7 @@ test('hover text is concise, localized, and state-specific', () => {
   store.phase = 'loading'
   assert.equal(plugin._testing.tooltipText(store, true), '正在生成…')
   store.phase = 'ready'
-  store.candidates = ['A']
-  store.index = 0
+  store.candidate = 'A'
   assert.equal(plugin._testing.tooltipText(store, true), '换一条（⌘⇧Space）')
   store.phase = 'error'
   assert.equal(plugin._testing.tooltipText(store, false), 'Generation failed. Click to retry')

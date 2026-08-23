@@ -1,6 +1,6 @@
 {
   "name": "dsh-prompt-for-me",
-  "version": "0.3.1",
+  "version": "0.4.0",
   "description": "Context-aware next-message suggestions for the DeepSeek Harness composer, always reviewed by the user before sending.",
   "type": "commonjs",
   "main": "lib/index.cjs",

@@ -62,14 +62,14 @@ function contextWith(streamFactory) {
 
 test('generate reuses the session route and sends bounded contextual JSON without tools', async () => {
   const { ctx, requests } = contextWith(async function * () {
-    yield { type: 'text-delta', text: `${candidateLines('A', 'B', 'C')}\n` }
+    yield { type: 'text-delta', text: `${candidateLines('A')}\n` }
     yield { type: 'finish', reason: { kind: 'stop' } }
   })
   const generate = host._testing.createGenerateHandler(ctx, resolveConfig({}))
   const result = await generate({
     sessionId: 'session-1',
     draft: 'Please inspect this.',
-    excluded: [],
+    currentCycleSkipped: ['Already shown'],
     localOutcomes: [{
       sessionId: 'history-1',
       action: 'cycled',
@@ -79,7 +79,7 @@ test('generate reuses the session route and sends bounded contextual JSON withou
   })
 
   assert.equal(result.ok, true)
-  assert.deepEqual(result.candidates, ['A', 'B', 'C'])
+  assert.equal(result.candidate, 'A')
   assert.equal(requests.length, 1)
   assert.equal(requests[0].provider, 'session-provider')
   assert.equal(requests[0].model, 'session-model')
@@ -98,6 +98,7 @@ test('generate reuses the session route and sends bounded contextual JSON withou
   assert.deepEqual(framed.userPreferenceMemory.rejectedSuggestions, [
     { text: 'Old suggestion' },
   ])
+  assert.deepEqual(framed.currentCycleSkipped, ['Already shown'])
 })
 
 test('generate records token usage and privacy-safe stage metrics', async () => {
@@ -105,7 +106,6 @@ test('generate records token usage and privacy-safe stage metrics', async () => 
   const metrics = []
   const { ctx } = contextWith(async function * () {
     yield { type: 'text-delta', text: candidateLines('A') + '\n' }
-    yield { type: 'text-delta', text: candidateLines('B', 'C') + '\n' }
     yield {
       type: 'usage',
       usage: { inputTokens: 9000, outputTokens: 120, cacheReadTokens: 2000, reasoningTokens: 0 },
@@ -117,7 +117,7 @@ test('generate records token usage and privacy-safe stage metrics', async () => 
     record: (metric) => metrics.push(metric),
   })
   const result = await generate({
-    sessionId: 'session-1', draft: 'private draft', excluded: [], localOutcomes: [],
+    sessionId: 'session-1', draft: 'private draft', currentCycleSkipped: [], localOutcomes: [],
   }, async () => {})
 
   assert.equal(result.ok, true)
@@ -132,7 +132,8 @@ test('generate records token usage and privacy-safe stage metrics', async () => 
   assert.equal(metrics[0].context.recentTurnItems, 1)
   assert.equal(metrics[0].context.preferenceManualItems, 1)
   assert.equal(metrics[0].context.currentEditedItems, 0)
-  assert.equal(metrics[0].stages.candidateMs.length, 3)
+  assert.equal(metrics[0].stages.candidateMs.length, 1)
+  assert.equal(metrics[0].context.currentCycleSkippedItems, 0)
   assert.equal(metrics[0].stages.modelFirstReasoningMs, null)
   assert.equal(JSON.stringify(metrics[0]).includes('private draft'), false)
   assert.equal(JSON.stringify(metrics[0]).includes('Fix the concurrency bug'), false)
@@ -148,14 +149,14 @@ test('historicalEvents retains session IDs for outcome correlation', async () =>
 
 test('generate rejects an empty draft without a direct human message', async () => {
   const { ctx, requests, session } = contextWith(async function * () {
-    yield { type: 'text-delta', text: candidateLines('A', 'B', 'C') }
+    yield { type: 'text-delta', text: candidateLines('A') }
   })
   session.events = [
     userEvent('Workspace instructions', { kind: 'agent-instructions' }),
     userEvent('Skill catalog', { kind: 'skill-catalog' }),
   ]
   const result = await host._testing.createGenerateHandler(ctx, resolveConfig({}))({
-    sessionId: 'session-1', draft: '', excluded: [], localOutcomes: [],
+    sessionId: 'session-1', draft: '', currentCycleSkipped: [], localOutcomes: [],
   })
   assert.deepEqual(result, {
     ok: false,
@@ -189,44 +190,44 @@ test('metrics store stays bounded and returns detached snapshots', () => {
 
 test('metrics failures never change a successful generation', async () => {
   const { ctx } = contextWith(async function * () {
-    yield { type: 'text-delta', text: candidateLines('A', 'B', 'C') }
+    yield { type: 'text-delta', text: candidateLines('A') }
   })
   const generate = host._testing.createGenerateStream(ctx, resolveConfig({}), {
     record: () => { throw new Error('metrics unavailable') },
   })
   const result = await generate({
-    sessionId: 'session-1', draft: '', excluded: [], localOutcomes: [],
+    sessionId: 'session-1', draft: '', currentCycleSkipped: [], localOutcomes: [],
   }, async () => {})
   assert.equal(result.ok, true)
 })
 
 test('generate honors a fixed route override', async () => {
   const { ctx, requests } = contextWith(async function * () {
-    yield { type: 'text-delta', text: candidateLines('A', 'B', 'C') }
+    yield { type: 'text-delta', text: candidateLines('A') }
   })
   const config = resolveConfig({ provider: 'fixed', model: 'fixed-model' })
   const result = await host._testing.createGenerateHandler(ctx, config)({
-    sessionId: 'session-1', draft: '', excluded: [], localOutcomes: [],
+    sessionId: 'session-1', draft: '', currentCycleSkipped: [], localOutcomes: [],
   })
   assert.equal(result.ok, true)
   assert.equal(requests[0].provider, 'fixed')
   assert.equal(requests[0].model, 'fixed-model')
 })
 
-test('generate publishes the first complete candidate before the remaining batch', async () => {
-  let releaseRemaining
-  const remaining = new Promise((resolve) => { releaseRemaining = resolve })
+test('generate publishes the complete suggestion before the model finishes', async () => {
+  let releaseFinish
+  const finish = new Promise((resolve) => { releaseFinish = resolve })
   const { ctx } = contextWith(async function * () {
     yield { type: 'text-delta', text: `${candidateLines('A')}\n` }
-    await remaining
-    yield { type: 'text-delta', text: candidateLines('B', 'C') }
+    await finish
+    yield { type: 'finish', reason: { kind: 'stop' } }
   })
   const generate = host._testing.createGenerateStream(ctx, resolveConfig({}))
   const seen = []
   let signalFirst
   const first = new Promise((resolve) => { signalFirst = resolve })
   const pending = generate({
-    sessionId: 'session-1', draft: '', excluded: [], localOutcomes: [],
+    sessionId: 'session-1', draft: '', currentCycleSkipped: [], localOutcomes: [],
   }, async (candidate) => {
     seen.push(candidate)
     if (seen.length === 1) signalFirst()
@@ -234,10 +235,10 @@ test('generate publishes the first complete candidate before the remaining batch
 
   await first
   assert.deepEqual(seen, ['A'])
-  releaseRemaining()
+  releaseFinish()
   const result = await pending
   assert.equal(result.ok, true)
-  assert.deepEqual(seen, ['A', 'B', 'C'])
+  assert.equal(result.candidate, 'A')
 })
 
 test('generate rejects stale sessions and invalid model output with user-safe errors', async () => {
@@ -245,15 +246,19 @@ test('generate rejects stale sessions and invalid model output with user-safe er
     yield { type: 'text-delta', text: 'not-json' }
   })
   const generate = host._testing.createGenerateHandler(ctx, resolveConfig({}))
-  assert.deepEqual(await generate({ sessionId: 'gone', draft: '', excluded: [] }), {
+  assert.deepEqual(await generate({
+    sessionId: 'gone', draft: '', currentCycleSkipped: [],
+  }), {
     ok: false,
     code: 'SESSION_NOT_LIVE',
     message: 'This session is no longer active.',
   })
-  assert.deepEqual(await generate({ sessionId: 'session-1', draft: '', excluded: [] }), {
+  assert.deepEqual(await generate({
+    sessionId: 'session-1', draft: '', currentCycleSkipped: [],
+  }), {
     ok: false,
     code: 'GENERATION_FAILED',
-    message: 'Prompt for Me could not generate a valid suggestion batch.',
+    message: 'Prompt for Me could not generate a valid suggestion.',
   })
 })
 
@@ -272,22 +277,32 @@ test('generate reports a locally enforced model timeout', async () => {
     return: async () => ({ done: true }),
   }))
   const generate = host._testing.createGenerateHandler(ctx, resolveConfig({ timeoutMs: 1 }))
-  assert.deepEqual(await generate({ sessionId: 'session-1', draft: '', excluded: [] }), {
+  assert.deepEqual(await generate({
+    sessionId: 'session-1', draft: '', currentCycleSkipped: [],
+  }), {
     ok: false,
     code: 'TIMEOUT',
     message: 'Prompt for Me timed out.',
   })
 })
 
-test('collectCandidates rejects tool calls and non-stop finishes', async () => {
+test('collectCandidate rejects tool calls and non-stop finishes', async () => {
   const controller = new AbortController()
   const config = resolveConfig({})
-  await assert.rejects(() => host._testing.collectCandidates((async function * () {
+  await assert.rejects(() => host._testing.collectCandidate((async function * () {
     yield { type: 'tool-call' }
   })(), controller, config, [], async () => {}), /tool-call/)
-  await assert.rejects(() => host._testing.collectCandidates((async function * () {
+  await assert.rejects(() => host._testing.collectCandidate((async function * () {
     yield { type: 'finish', reason: { kind: 'max-tokens' } }
   })(), controller, config, [], async () => {}), /max-tokens/)
+})
+
+test('collectCandidate blocks visually identical skipped suggestions', async () => {
+  const controller = new AbortController()
+  const config = resolveConfig({})
+  await assert.rejects(() => host._testing.collectCandidate((async function * () {
+    yield { type: 'text-delta', text: '{"candidate":"Ａ\u200b"}\n' }
+  })(), controller, config, [' a '], async () => {}), /missing-candidate/)
 })
 
 test('sameOrigin accepts same-host and non-browser requests and rejects cross-site origins', () => {

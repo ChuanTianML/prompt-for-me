@@ -6,7 +6,11 @@ module.exports = function createClientPlugin(React, options) {
   const LEGACY_STORAGE_KEY = 'dsh.prompt-for-me.outcomes.v1'
   const TRIGGER_COALESCE_MS = 250
   const stores = new Map()
-  const config = { shortcut: 'Mod+Shift+Space', maxLocalOutcomes: 50 }
+  const config = {
+    shortcut: 'Mod+Shift+Space',
+    maxCurrentCycleSkipped: 10,
+    maxLocalOutcomes: 50,
+  }
   const now = options && typeof options.now === 'function'
     ? options.now
     : () => (typeof performance !== 'undefined' && typeof performance.now === 'function'
@@ -59,7 +63,7 @@ module.exports = function createClientPlugin(React, options) {
           if (event && event.type === 'candidate' && typeof event.candidate === 'string') {
             await onCandidate(event.candidate)
           } else if (event && event.type === 'done') {
-            completion = { ok: true, batchId: event.batchId }
+            completion = { ok: true, requestId: event.requestId }
           } else if (event && event.type === 'error') {
             completion = {
               ok: false,
@@ -92,14 +96,15 @@ module.exports = function createClientPlugin(React, options) {
       store = {
         phase: 'idle',
         error: null,
-        candidates: [],
-        index: -1,
+        candidate: undefined,
+        candidateSkipped: false,
+        currentCycleSkipped: [],
         sourceDraft: '',
+        requestDraft: '',
         observedDraft: '',
         observedPhase: null,
         requestSeq: 0,
         pending: false,
-        awaitingNext: false,
         awaitingDraftAck: null,
         lastAcceptedTriggerAt: null,
         controller: null,
@@ -205,7 +210,7 @@ module.exports = function createClientPlugin(React, options) {
   }
 
   function activeCandidate(store) {
-    return store.index >= 0 ? store.candidates[store.index] : undefined
+    return store.candidate
   }
 
   function setDraft(actions, text) {
@@ -216,16 +221,13 @@ module.exports = function createClientPlugin(React, options) {
     if (store.controller) store.controller.abort()
     store.controller = null
     store.pending = false
-    store.awaitingNext = false
     store.awaitingDraftAck = null
   }
 
-  function showCandidate(store, actions, index) {
-    const candidate = store.candidates[index]
-    if (candidate === undefined) return false
-    store.index = index
-    store.awaitingNext = false
-    store.phase = 'ready'
+  function showCandidate(store, actions, candidate) {
+    store.candidate = candidate
+    store.candidateSkipped = false
+    store.phase = store.pending ? 'loading' : 'ready'
     store.error = null
     store.awaitingDraftAck = {
       candidate,
@@ -236,13 +238,21 @@ module.exports = function createClientPlugin(React, options) {
     return true
   }
 
-  async function requestBatch(sessionId, draft, excluded, actions, store, sourceDraft) {
+  function rememberSkipped(store, candidate) {
+    if (!store.currentCycleSkipped.includes(candidate)) store.currentCycleSkipped.push(candidate)
+    if (store.currentCycleSkipped.length > config.maxCurrentCycleSkipped) {
+      store.currentCycleSkipped.splice(
+        0,
+        store.currentCycleSkipped.length - config.maxCurrentCycleSkipped,
+      )
+    }
+  }
+
+  async function requestSuggestion(sessionId, draft, actions, store) {
     cancelPending(store)
     store.phase = 'loading'
     store.error = null
-    store.candidates = []
-    store.index = -1
-    store.sourceDraft = sourceDraft
+    store.requestDraft = draft
     store.pending = true
     store.requestSeq += 1
     const seq = store.requestSeq
@@ -253,22 +263,13 @@ module.exports = function createClientPlugin(React, options) {
     try {
       result = await streamGenerate({
         sessionId,
-        draft: sourceDraft,
-        excluded,
+        draft: store.sourceDraft,
+        currentCycleSkipped: [...store.currentCycleSkipped],
         localOutcomes: readOutcomes(),
       }, async (candidate) => {
         if (seq !== store.requestSeq || controller.signal.aborted
           || typeof candidate !== 'string' || candidate.trim() === '') return
-        const normalized = candidate.trim()
-        if (store.candidates.includes(normalized)) return
-        store.candidates.push(normalized)
-        if (store.index < 0) {
-          if (store.observedDraft === draft) showCandidate(store, actions, 0)
-        } else if (store.awaitingNext && store.observedDraft === activeCandidate(store)) {
-          showCandidate(store, actions, store.index + 1)
-        } else {
-          emit(store)
-        }
+        if (store.observedDraft === draft) showCandidate(store, actions, candidate.trim())
       }, controller.signal)
     } catch (error) {
       if (controller.signal.aborted) return
@@ -277,7 +278,8 @@ module.exports = function createClientPlugin(React, options) {
     if (seq !== store.requestSeq || controller.signal.aborted) return
     store.pending = false
     store.controller = null
-    if (store.candidates.length === 0) {
+    if (!result || result.ok !== true || activeCandidate(store) === undefined
+      || store.candidateSkipped) {
       store.phase = 'error'
       store.error = result && typeof result.message === 'string'
         ? result.message
@@ -285,20 +287,14 @@ module.exports = function createClientPlugin(React, options) {
       emit(store)
       return
     }
-    if (store.awaitingNext && store.observedDraft === activeCandidate(store)
-      && !showCandidate(store, actions, store.index + 1)) {
-      store.phase = 'error'
-      store.error = 'Prompt for Me could not prepare another suggestion.'
-    } else {
-      store.phase = 'ready'
-      store.error = null
-    }
+    store.phase = 'ready'
+    store.error = null
     emit(store)
   }
 
   async function trigger(sessionId, draft, actions) {
     const store = storeFor(sessionId)
-    if (store.phase === 'loading' || store.awaitingDraftAck !== null) return
+    if (store.pending || store.awaitingDraftAck !== null) return
     const triggerAt = now()
     if (store.lastAcceptedTriggerAt !== null
       && triggerAt - store.lastAcceptedTriggerAt < TRIGGER_COALESCE_MS) return
@@ -306,30 +302,16 @@ module.exports = function createClientPlugin(React, options) {
     store.observedDraft = draft
     const candidate = activeCandidate(store)
     if (candidate !== undefined && draft === candidate) {
-      recordOutcome(sessionId, {
-        action: 'cycled',
-        origin: 'suggestion-exact',
-        originalText: candidate,
-      })
-      if (store.index + 1 < store.candidates.length) {
-        showCandidate(store, actions, store.index + 1)
-        return
+      if (!store.candidateSkipped) {
+        recordOutcome(sessionId, {
+          action: 'cycled',
+          origin: 'suggestion-exact',
+          originalText: candidate,
+        })
+        rememberSkipped(store, candidate)
+        store.candidateSkipped = true
       }
-      if (store.pending) {
-        store.awaitingNext = true
-        store.phase = 'loading'
-        store.error = null
-        emit(store)
-        return
-      }
-      await requestBatch(
-        sessionId,
-        draft,
-        [...store.candidates],
-        actions,
-        store,
-        store.sourceDraft,
-      )
+      await requestSuggestion(sessionId, draft, actions, store)
       return
     }
     if (candidate !== undefined && draft !== candidate) {
@@ -339,8 +321,14 @@ module.exports = function createClientPlugin(React, options) {
         originalText: candidate,
         finalText: draft,
       })
+      rememberSkipped(store, candidate)
+      store.candidateSkipped = true
+      store.sourceDraft = draft
+    } else {
+      store.sourceDraft = draft
+      store.currentCycleSkipped = []
     }
-    await requestBatch(sessionId, draft, [], actions, store, draft)
+    await requestSuggestion(sessionId, draft, actions, store)
   }
 
   function observe(sessionId, draft, phase) {
@@ -356,7 +344,6 @@ module.exports = function createClientPlugin(React, options) {
       stateChanged = true
     } else if (draftAck !== null && draft !== draftAck.previousDraft) {
       store.awaitingDraftAck = null
-      store.awaitingNext = false
       if (phase !== 'adjudicating' && phase !== 'submitting') store.phase = 'ready'
       stateChanged = true
     }
@@ -369,8 +356,11 @@ module.exports = function createClientPlugin(React, options) {
         finalText: draft,
       })
       cancelPending(store)
-      store.candidates = []
-      store.index = -1
+      store.candidate = undefined
+      store.candidateSkipped = false
+      store.currentCycleSkipped = []
+      store.sourceDraft = ''
+      store.requestDraft = ''
       store.phase = 'idle'
       emit(store)
     } else if (candidate === undefined && enteringSubmission) {
@@ -384,19 +374,21 @@ module.exports = function createClientPlugin(React, options) {
       const wasPending = store.pending
       cancelPending(store)
       if (wasPending) store.requestSeq += 1
+      store.candidateSkipped = false
+      store.currentCycleSkipped = []
+      store.sourceDraft = ''
+      store.requestDraft = ''
       store.phase = 'idle'
       store.error = null
       if (wasPending) emit(store)
-    } else if (store.pending && candidate === undefined
-      && previousDraft === store.sourceDraft && draft !== store.sourceDraft) {
+    } else if (store.pending && previousDraft === store.requestDraft && draft !== store.requestDraft) {
       cancelPending(store)
       store.requestSeq += 1
-      store.phase = 'idle'
+      store.phase = candidate === undefined ? 'idle' : 'ready'
       store.error = null
       emit(store)
     } else if (candidate !== undefined && previousDraft === candidate && draft !== candidate
       && phase !== 'adjudicating' && phase !== 'submitting') {
-      store.awaitingNext = false
       store.phase = 'ready'
       emit(store)
     } else if (stateChanged) {
@@ -543,6 +535,10 @@ module.exports = function createClientPlugin(React, options) {
       void rpc('configuration', {}).then((result) => {
         if (result && result.ok === true) {
           if (typeof result.shortcut === 'string') config.shortcut = result.shortcut
+          if (Number.isSafeInteger(result.maxCurrentCycleSkipped)
+            && result.maxCurrentCycleSkipped >= 1) {
+            config.maxCurrentCycleSkipped = result.maxCurrentCycleSkipped
+          }
           if (Number.isSafeInteger(result.maxLocalOutcomes) && result.maxLocalOutcomes >= 0) {
             config.maxLocalOutcomes = result.maxLocalOutcomes
           }

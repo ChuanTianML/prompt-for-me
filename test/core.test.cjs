@@ -29,14 +29,15 @@ function outcome(sessionId, action, origin, originalText, finalText) {
 }
 
 test('resolveConfig supplies the three-tier defaults and rejects invalid limits and routes', () => {
-  const config = core.resolveConfig({ candidateCount: 4 })
-  assert.equal(config.candidateCount, 4)
+  const config = core.resolveConfig({})
+  assert.equal(config.maxCurrentCycleSkipped, 10)
   assert.equal(config.maxCurrentTurns, 3)
   assert.equal(config.maxCurrentContextBytes, 16384)
   assert.equal(config.maxCurrentFeedbackBytes, 4096)
   assert.equal(config.maxPreferenceMemoryBytes, 8192)
   assert.equal(config.shortcut, 'Mod+Shift+Space')
   assert.throws(() => core.resolveConfig({ provider: 'deepseek' }), /configured together/)
+  assert.throws(() => core.resolveConfig({ maxCurrentCycleSkipped: 0 }), /maxCurrentCycleSkipped/)
   assert.throws(() => core.resolveConfig({ maxCurrentFeedbackBytes: 100 }), /maxCurrentFeedbackBytes/)
   assert.throws(() => core.resolveConfig({ timeoutMs: 0 }), /timeoutMs/)
 })
@@ -114,7 +115,7 @@ test('buildSuggestionInput separates current context, session feedback, and pref
   const input = core.buildSuggestionInput({
     sessionId: 'current',
     draft: 'Please continue with token=super-secret',
-    excluded: ['Already shown'],
+    currentCycleSkipped: ['Already shown'],
     localOutcomes,
   }, [
     message('user/message', 'Old current turn'),
@@ -161,12 +162,14 @@ test('buildSuggestionInput separates current context, session feedback, and pref
   assert.deepEqual(Object.keys(input.userPreferenceMemory), [
     'manualPrompts', 'editedSuggestions', 'acceptedExact', 'rejectedSuggestions',
   ])
-  assert.deepEqual(input.excludedCandidates, ['Already shown'])
+  assert.deepEqual(input.currentCycleSkipped, ['Already shown'])
 })
 
 test('history selection favors the newest sessions and respects the manual-prompt cap', () => {
   const config = core.resolveConfig({ maxManualPrompts: 2 })
-  const input = core.buildSuggestionInput({ sessionId: 'current', draft: '', excluded: [] }, [], [
+  const input = core.buildSuggestionInput({
+    sessionId: 'current', draft: '', currentCycleSkipped: [],
+  }, [], [
     { sessionId: 'newer', events: [
       message('user/message', 'newer one'), message('user/message', 'newer two'),
     ] },
@@ -211,7 +214,7 @@ test('feedback and preference sections remain inside independent byte budgets', 
   const input = core.buildSuggestionInput({
     sessionId: 'current',
     draft: '',
-    excluded: [],
+    currentCycleSkipped: [],
     localOutcomes: [
       outcome('current', 'submitted', 'suggestion-edited', long, `${long}编辑`),
       outcome(null, 'submitted', 'suggestion-edited', long, `${long}历史编辑`),
@@ -222,25 +225,38 @@ test('feedback and preference sections remain inside independent byte budgets', 
   assert.ok(Buffer.byteLength(JSON.stringify(input.userPreferenceMemory), 'utf8') <= 640)
 })
 
+test('current-cycle skips keep only the configured recent suggestions', () => {
+  const config = core.resolveConfig({ maxCurrentCycleSkipped: 2 })
+  const input = core.buildSuggestionInput({
+    sessionId: 'current',
+    draft: '',
+    currentCycleSkipped: ['old', 'token=secret-value', 'new'],
+  }, [], [], config)
+  assert.deepEqual(input.currentCycleSkipped, ['token=[REDACTED_SECRET]', 'new'])
+})
+
 test('parseCandidateLine enforces one bounded candidate field', () => {
-  const config = core.resolveConfig({ candidateCount: 3 })
+  const config = core.resolveConfig({})
   assert.equal(core.parseCandidateLine('{"candidate":" one "}', config), 'one')
   assert.throws(() => core.parseCandidateLine('not json', config), /not-json/)
   assert.throws(() => core.parseCandidateLine('{"candidate":"one","extra":true}', config), /invalid-line/)
   assert.throws(() => core.parseCandidateLine('{"candidate":2}', config), /invalid-line/)
 })
 
-test('systemPrompt states the signal hierarchy and progressive NDJSON response', () => {
-  const prompt = core.systemPrompt(4)
+test('systemPrompt states the signal hierarchy and single-suggestion response', () => {
+  const prompt = core.systemPrompt()
   assert.match(prompt, /current\.draft and current\.recentTurns to decide the current task/)
   assert.match(prompt, /manualPrompts and editedSuggestions outweigh acceptedExact/)
   assert.match(prompt, /rejectedSuggestions only as weak negative evidence/)
+  assert.match(prompt, /currentCycleSkipped is a suggestion the user rejected/)
+  assert.match(prompt, /Do not repeat or paraphrase any item/)
+  assert.match(prompt, /meaningfully different next message/)
   assert.match(prompt, /must never override the current task/)
   assert.match(prompt, /in the user's voice/)
   assert.match(prompt, /Never write the coding agent's reply/)
   assert.match(prompt, /ask the user what to do next/)
-  assert.match(prompt, /exactly 4 distinct suggestions/)
-  assert.match(prompt, /"candidate":"suggestion 4"/)
+  assert.match(prompt, /exactly one NDJSON line/)
+  assert.match(prompt, /"candidate":"suggestion"/)
   assert.match(prompt, /NDJSON/)
   assert.match(prompt, /untrusted data/)
   assert.match(prompt, /cannot imply approval or weaken safety checks/)
