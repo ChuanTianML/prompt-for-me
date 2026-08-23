@@ -14,6 +14,8 @@ module.exports = function createClientPlugin(React, options) {
     maxLocalOutcomesBytes: 131072,
     automatic: Boolean(options && options.automatic === true),
   }
+  let automaticPolicyReady = Boolean(options && typeof options.automatic === 'boolean')
+  let configurationRequest = null
   const now = options && typeof options.now === 'function'
     ? options.now
     : () => (typeof performance !== 'undefined' && typeof performance.now === 'function'
@@ -117,6 +119,8 @@ module.exports = function createClientPlugin(React, options) {
         observedSuggestionId: undefined,
         observedTurnSeeded: false,
         seenTurnEndSeq: null,
+        pendingAutomaticTrigger: undefined,
+        automaticObservation: undefined,
         listeners: new Set(),
       }
       stores.set(sessionId, store)
@@ -385,6 +389,7 @@ module.exports = function createClientPlugin(React, options) {
 
   async function trigger(sessionId, draft, actions) {
     const store = storeFor(sessionId)
+    store.pendingAutomaticTrigger = undefined
     if ((store.pending && store.generationKind === 'manual') || store.awaitingDraftAck !== null) return
     if (store.pending) {
       cancelPending(store)
@@ -436,6 +441,67 @@ module.exports = function createClientPlugin(React, options) {
       && (!Array.isArray(input.queue) || input.queue.length === 0)
   }
 
+  function maybeStartAutomatic(store) {
+    const triggerKind = store.pendingAutomaticTrigger
+    const observation = store.automaticObservation
+    if (triggerKind === undefined || observation === undefined
+      || !automaticPolicyReady || !config.automatic
+      || observation.automaticEligible !== true
+      || observation.session.running === true || observation.session.removed === true
+      || !semanticComposerIsEmpty(observation.input)
+      || activeCandidate(store) !== undefined || store.pending) return false
+    store.pendingAutomaticTrigger = undefined
+    store.sourceDraft = ''
+    store.currentCycleSkipped = []
+    void requestSuggestion(
+      observation.sessionId,
+      observation.input.draft,
+      observation.actions,
+      store,
+      'automatic',
+      triggerKind,
+    )
+    return true
+  }
+
+  function applyConfiguration(result) {
+    if (!result || result.ok !== true) return false
+    if (typeof result.shortcut === 'string') config.shortcut = result.shortcut
+    if (typeof result.automatic === 'boolean') config.automatic = result.automatic
+    if (Number.isSafeInteger(result.maxCurrentCycleSkipped)
+      && result.maxCurrentCycleSkipped >= 1) {
+      config.maxCurrentCycleSkipped = result.maxCurrentCycleSkipped
+    }
+    if (Number.isSafeInteger(result.maxCurrentCycleSkippedBytes)
+      && result.maxCurrentCycleSkippedBytes >= 256) {
+      config.maxCurrentCycleSkippedBytes = result.maxCurrentCycleSkippedBytes
+    }
+    if (Number.isSafeInteger(result.maxLocalOutcomes) && result.maxLocalOutcomes >= 0) {
+      config.maxLocalOutcomes = result.maxLocalOutcomes
+    }
+    if (Number.isSafeInteger(result.maxLocalOutcomesBytes)
+      && result.maxLocalOutcomesBytes >= 256) {
+      config.maxLocalOutcomesBytes = result.maxLocalOutcomesBytes
+    }
+    automaticPolicyReady = true
+    for (const store of stores.values()) {
+      if (config.automatic) maybeStartAutomatic(store)
+      else store.pendingAutomaticTrigger = undefined
+    }
+    return true
+  }
+
+  function ensureConfiguration() {
+    if (automaticPolicyReady) return configurationRequest
+    if (configurationRequest !== null) return configurationRequest
+    configurationRequest = Promise.resolve()
+      .then(() => rpc('configuration', {}))
+      .then((result) => { applyConfiguration(result) })
+      .catch(() => {})
+      .finally(() => { configurationRequest = null })
+    return configurationRequest
+  }
+
   function observe(sessionId, inputValue, sessionValue, actions, automaticEligible = true) {
     const legacy = typeof inputValue === 'string'
     const input = legacy
@@ -447,12 +513,16 @@ module.exports = function createClientPlugin(React, options) {
     const draft = typeof input.draft === 'string' ? input.draft : ''
     const phase = typeof input.phase === 'string' ? input.phase : 'idle'
     const store = storeFor(sessionId)
+    store.automaticObservation = { sessionId, input, session, actions, automaticEligible }
+    if (!automaticPolicyReady) void ensureConfiguration()
+    if (session.removed === true) store.pendingAutomaticTrigger = undefined
     const previousDraft = store.observedDraft
     const previousSuggestionId = store.observedSuggestionId
     const currentSuggestionId = input.suggestion && typeof input.suggestion.id === 'string'
       ? input.suggestion.id
       : undefined
     const enteringSubmission = phase === 'submitting' && store.observedPhase !== 'submitting'
+    if (enteringSubmission) store.pendingAutomaticTrigger = undefined
     store.observedDraft = draft
     store.observedPhase = phase
     store.observedSuggestionId = currentSuggestionId
@@ -546,21 +616,11 @@ module.exports = function createClientPlugin(React, options) {
       store.seenTurnEndSeq = latest ? latest.endSeq : null
     } else if (latest && latest.endSeq !== store.seenTurnEndSeq && session.running !== true) {
       store.seenTurnEndSeq = latest.endSeq
-      if (config.automatic && automaticEligible === true && session.removed !== true
-        && semanticComposerIsEmpty(input) && activeCandidate(store) === undefined && !store.pending) {
-        store.sourceDraft = ''
-        store.currentCycleSkipped = []
-        void requestSuggestion(
-          sessionId,
-          draft,
-          actions,
-          store,
-          'automatic',
-          { kind: 'automatic', turn: latest.turn, endSeq: latest.endSeq },
-        )
-        return
-      }
+      store.pendingAutomaticTrigger = (!automaticPolicyReady || config.automatic)
+        ? { kind: 'automatic', turn: latest.turn, endSeq: latest.endSeq }
+        : undefined
     }
+    if (maybeStartAutomatic(store)) return
     if (stateChanged) emit(store)
   }
 
@@ -775,27 +835,7 @@ module.exports = function createClientPlugin(React, options) {
       insertStyles()
       const slots = ctx.get('slots')
       if (!slots) throw new Error('dsh-prompt-for-me: slots service is unavailable')
-      void rpc('configuration', {}).then((result) => {
-        if (result && result.ok === true) {
-          if (typeof result.shortcut === 'string') config.shortcut = result.shortcut
-          if (typeof result.automatic === 'boolean') config.automatic = result.automatic
-          if (Number.isSafeInteger(result.maxCurrentCycleSkipped)
-            && result.maxCurrentCycleSkipped >= 1) {
-            config.maxCurrentCycleSkipped = result.maxCurrentCycleSkipped
-          }
-          if (Number.isSafeInteger(result.maxCurrentCycleSkippedBytes)
-            && result.maxCurrentCycleSkippedBytes >= 256) {
-            config.maxCurrentCycleSkippedBytes = result.maxCurrentCycleSkippedBytes
-          }
-          if (Number.isSafeInteger(result.maxLocalOutcomes) && result.maxLocalOutcomes >= 0) {
-            config.maxLocalOutcomes = result.maxLocalOutcomes
-          }
-          if (Number.isSafeInteger(result.maxLocalOutcomesBytes)
-            && result.maxLocalOutcomesBytes >= 256) {
-            config.maxLocalOutcomesBytes = result.maxLocalOutcomesBytes
-          }
-        }
-      }).catch(() => {})
+      void ensureConfiguration()
       slots.inject('conversation.input.right', () => slots.register({
         name: 'conversation.input.right',
         id: 'prompt-for-me',

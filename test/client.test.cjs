@@ -142,11 +142,11 @@ test('typing hides a native ghost, clearing re-arms it, and Escape dismissal is 
   assert.deepEqual(JSON.parse(values.get('dsh.prompt-for-me.outcomes.v2')), [])
 })
 
-test('running turns defer automatic generation and plan or semantic content suppresses it', async () => {
+test('running turns and temporarily ineligible composers defer automatic generation', async () => {
   browserStorage()
   const calls = []
   const plugin = createClientPlugin(React, {
-    generate: suggestionGenerator(['Deferred.'], calls).generate,
+    generate: suggestionGenerator(['Deferred.', 'Plan resumed.', 'Composer cleared.'], calls).generate,
     automatic: true,
   })
   const actions = { setDraft() {}, offerSuggestion: () => true, dismissSuggestion: () => true }
@@ -159,10 +159,59 @@ test('running turns defer automatic generation and plan or semantic content supp
   assert.equal(calls.length, 1)
 
   plugin._testing.observe('s2', input(), session(), actions, true)
-  plugin._testing.observe('s2', input(), session(new Map([[1, 3]])), actions, false)
-  plugin._testing.observe('s3', input(), session(), actions, true)
-  plugin._testing.observe('s3', input('', undefined, { imageIds: ['image'] }), session(new Map([[1, 3]])), actions, true)
+  const completed = session(new Map([[1, 3]]))
+  plugin._testing.observe('s2', input(), completed, actions, false)
+  plugin._testing.observe('s2', input(), completed, actions, true)
   await nextTask()
+  assert.equal(calls.length, 2)
+  plugin._testing.observe('s3', input(), session(), actions, true)
+  plugin._testing.observe('s3', input('', undefined, { imageIds: ['image'] }), completed, actions, true)
+  plugin._testing.observe('s3', input(), completed, actions, true)
+  await nextTask()
+  assert.equal(calls.length, 3)
+})
+
+test('a completed turn waits for the Host automatic policy before generating', async () => {
+  browserStorage()
+  let resolveConfiguration
+  const configuration = new Promise((resolve) => { resolveConfiguration = resolve })
+  const calls = []
+  const plugin = createClientPlugin(React, {
+    rpc: () => configuration,
+    generate: suggestionGenerator(['Policy loaded.'], calls).generate,
+  })
+  const actions = { setDraft() {}, offerSuggestion: () => true, dismissSuggestion: () => true }
+  plugin._testing.observe('s1', input(), session(), actions, true)
+  plugin._testing.observe('s1', input(), session(new Map([[1, 3]])), actions, true)
+  assert.equal(calls.length, 0)
+
+  resolveConfiguration({ ok: true, automatic: true })
+  await nextTask()
+  await nextTask()
+  assert.equal(calls.length, 1)
+  assert.deepEqual(calls[0].trigger, { kind: 'automatic', turn: 1, endSeq: 3 })
+})
+
+test('a later observation retries a failed Host configuration request', async () => {
+  browserStorage()
+  let configurationCalls = 0
+  const calls = []
+  const plugin = createClientPlugin(React, {
+    rpc: async () => {
+      configurationCalls += 1
+      if (configurationCalls === 1) throw new Error('temporary failure')
+      return { ok: true, automatic: true }
+    },
+    generate: suggestionGenerator(['Retry succeeded.'], calls).generate,
+  })
+  const actions = { setDraft() {}, offerSuggestion: () => true, dismissSuggestion: () => true }
+  plugin._testing.observe('s1', input(), session(), actions, true)
+  await nextTask()
+  plugin._testing.observe('s1', input(), session(new Map([[1, 3]])), actions, true)
+  await nextTask()
+  await nextTask()
+
+  assert.equal(configurationCalls, 2)
   assert.equal(calls.length, 1)
 })
 
