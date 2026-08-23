@@ -1,0 +1,71 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="500" viewBox="0 0 1200 500" role="img" aria-labelledby="title desc">
+  <title id="title">Prompt for Me interaction flow</title>
+  <desc id="desc">An eligible completed turn offers ghost text without changing the draft. Keyboard or click accepts it, typing or Escape preserves user control, and the Sparkles trigger directly fills a fresh suggestion.</desc>
+  <defs>
+    <linearGradient id="bg" x1="0" x2="1" y1="0" y2="1">
+      <stop offset="0" stop-color="#f7f8ff"/>
+      <stop offset="1" stop-color="#eef7ff"/>
+    </linearGradient>
+    <linearGradient id="ghost" x1="0" x2="1">
+      <stop offset="0" stop-color="#725cff"/>
+      <stop offset="1" stop-color="#2987ff"/>
+    </linearGradient>
+    <filter id="shadow" x="-20%" y="-30%" width="140%" height="170%">
+      <feDropShadow dx="0" dy="8" stdDeviation="12" flood-color="#1e3264" flood-opacity=".12"/>
+    </filter>
+    <marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#8290ac"/>
+    </marker>
+    <style>
+      .title{font:700 26px -apple-system,BlinkMacSystemFont,"Segoe UI","Noto Sans SC",sans-serif;fill:#17223b}
+      .label{font:650 18px -apple-system,BlinkMacSystemFont,"Segoe UI","Noto Sans SC",sans-serif;fill:#17223b}
+      .sub{font:400 14px -apple-system,BlinkMacSystemFont,"Segoe UI","Noto Sans SC",sans-serif;fill:#64708a}
+      .ghostText{font:600 18px -apple-system,BlinkMacSystemFont,"Segoe UI","Noto Sans SC",sans-serif;fill:#fff}
+      .chip{font:650 13px -apple-system,BlinkMacSystemFont,"Segoe UI","Noto Sans SC",sans-serif;fill:#52617e}
+    </style>
+  </defs>
+  <rect width="1200" height="500" rx="28" fill="url(#bg)"/>
+  <text x="56" y="55" class="title">Automatic offer, deliberate adoption · 自动出现，由你决定</text>
+
+  <g filter="url(#shadow)">
+    <rect x="55" y="105" width="235" height="112" rx="20" fill="#fff"/>
+    <text x="82" y="145" class="label">Turn completed</text>
+    <text x="82" y="174" class="sub">轮次完成 · Session idle</text>
+    <text x="82" y="198" class="sub">empty text · no image/queue</text>
+
+    <rect x="365" y="105" width="310" height="112" rx="20" fill="url(#ghost)"/>
+    <text x="394" y="145" class="ghostText">Ghost suggestion</text>
+    <text x="394" y="174" class="ghostText" opacity=".8">草稿仍为空 · Draft unchanged</text>
+    <rect x="543" y="184" width="104" height="22" rx="11" fill="#fff" opacity=".18"/>
+    <text x="557" y="200" class="ghostText" font-size="12">Tab / → / ✓</text>
+
+    <rect x="750" y="105" width="395" height="112" rx="20" fill="#fff"/>
+    <text x="779" y="145" class="label">Accepted draft</text>
+    <text x="779" y="174" class="sub">采用后才成为可编辑、可撤销的文字</text>
+    <text x="779" y="198" class="sub">Edit freely · Enter sends the final text</text>
+  </g>
+
+  <path d="M290 161 H350" stroke="#8290ac" stroke-width="3" fill="none" marker-end="url(#arrow)"/>
+  <path d="M675 161 H735" stroke="#8290ac" stroke-width="3" fill="none" marker-end="url(#arrow)"/>
+
+  <g filter="url(#shadow)">
+    <rect x="55" y="296" width="340" height="138" rx="20" fill="#fff"/>
+    <circle cx="91" cy="335" r="18" fill="#eef0f6"/>
+    <text x="85" y="341" class="label" font-size="18">⌨</text>
+    <text x="121" y="340" class="label">Type / Escape</text>
+    <text x="82" y="375" class="sub">输入时隐藏；清空后可以重现</text>
+    <text x="82" y="401" class="sub">Escape dismisses · Enter never accepts</text>
+
+    <rect x="465" y="296" width="680" height="138" rx="20" fill="#fff"/>
+    <circle cx="504" cy="335" r="19" fill="#725cff"/>
+    <text x="497" y="342" fill="#fff" font-size="20">✦</text>
+    <text x="537" y="340" class="label">Trigger stays one-click</text>
+    <text x="493" y="375" class="sub">Sparkles / Mod+Shift+Space requests a fresh suggestion</text>
+    <text x="493" y="401" class="sub">手动触发始终直接填充；自动生成中也可立即接管</text>
+    <rect x="949" y="318" width="162" height="34" rx="17" fill="#edf0ff"/>
+    <text x="970" y="340" class="chip">Direct fill · 直接写入</text>
+  </g>
+
+  <path d="M520 217 V255 H225 V281" stroke="#8290ac" stroke-width="3" fill="none" marker-end="url(#arrow)"/>
+  <path d="M520 217 V255 H805 V281" stroke="#8290ac" stroke-width="3" fill="none" marker-end="url(#arrow)"/>
+</svg>

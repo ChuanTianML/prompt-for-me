@@ -2,25 +2,41 @@
 
 [English](README.md)
 
-Prompt for Me 会根据 DeepSeek Harness 中有界的会话历史和本地建议交互，推测你下一句可能想说什么。它只把建议写入输入框，绝不会代替你发送。
+[![npm version](https://img.shields.io/npm/v/dsh-prompt-for-me)](https://www.npmjs.com/package/dsh-prompt-for-me) [![npm downloads](https://img.shields.io/npm/dm/dsh-prompt-for-me)](https://www.npmjs.com/package/dsh-prompt-for-me) [![GitHub stars](https://img.shields.io/github/stars/ChuanTianML/prompt-for-me)](https://github.com/ChuanTianML/prompt-for-me)
+
+Prompt for Me 会根据 DeepSeek Harness 中有界的会话历史和本地建议交互，推测你下一句可能想说什么。每当 Agent 完成一轮，它会安静地展示一条 ghost text；在你采用前，草稿仍然为空，插件也绝不会代替你发送。
+
+![Prompt for Me 交互流程](assets/interaction-flow.svg)
 
 ## 功能
 
-- 只在输入框操作区增加一个 Sparkles 按钮。
-- 全流程使用同一个 Trigger：点击按钮，或按 `Mod+Shift+Space`。
-- 每次有效 Trigger 只生成一条建议；完整 NDJSON 行通过校验后立即进入输入框。
-- 下一次请求会携带本轮已经跳过的建议，并要求模型不得重复或改写复述它们。
-- 快速连续 Trigger 会被合并，快捷键长按产生的按键连发会被忽略；一次输入连发最多只推进一条建议。
-- 本轮最多保留 10 条已经跳过的建议，连续 Trigger 不会让请求无限增长。
-- 建议只写入草稿。你可以按 Enter 发送、先编辑、全部删除，或继续 Trigger。
+- 只有在出现新的已完成轮次、Session 空闲、plan mode 未生效，并且输入框文字严格为空、没有图片和排队意图时，才会自动生成。
+- 新版 Harness 使用输入框内联 ghost text；较旧客户端使用一张不修改草稿的轻量预览卡片。
+- 按 Tab、右方向键或相邻勾选控件采用 ghost；Enter 永远不会采用 ghost。
+- 开始输入会隐藏 ghost，清空文字后可以再次显示，Escape 会关闭它。
+- 保留 Sparkles Trigger 和 `Mod+Shift+Space` 快捷键。显式 Trigger 总会请求一条新建议并直接写入草稿，即使后台自动生成尚未结束。
+- 下一次显式请求会携带本轮已经跳过的建议，要求模型不得重复或改写复述；该列表最多保留 10 条。
 - 不绕过 Harness 权限审批、不调用工具、不自动发送消息。
+
+## 交互对照
+
+| 场景 | 结果 |
+| --- | --- |
+| 一轮完成且输入框符合条件 | 自动建议显示在草稿之外。 |
+| Tab、右方向键或勾选控件 | 可见建议成为一次可撤销的草稿编辑。 |
+| 只有 ghost 时按 Enter | 不采用，也不发送。 |
+| 开始输入 | ghost 隐藏，以用户文字为准。 |
+| 清空刚输入的文字 | 无须再次调用模型，隐藏建议可以重新显示。 |
+| Escape | 关闭可见建议。 |
+| Sparkles 按钮或 `Mod+Shift+Space` | 重新生成，并直接填充或替换草稿。 |
+| 编辑后按 Enter | 只发送最终文本；此时才把采用结果计入正向反馈。 |
 
 ## 安装
 
 推荐安装 Release 中已经构建好的 tarball，不需要执行构建脚本：
 
 ```sh
-dsh plugin --profile web add https://github.com/ChuanTianML/prompt-for-me/releases/download/v0.4.0/dsh-prompt-for-me-0.4.0.tgz
+dsh plugin --profile web add https://github.com/ChuanTianML/prompt-for-me/releases/download/v0.5.0/dsh-prompt-for-me-0.5.0.tgz
 ```
 
 安装后重启 `dsh web`。
@@ -28,7 +44,7 @@ dsh plugin --profile web add https://github.com/ChuanTianML/prompt-for-me/releas
 也可以安装固定 Git 标签：
 
 ```sh
-dsh plugin --profile web add github:ChuanTianML/prompt-for-me#v0.4.0
+dsh plugin --profile web add github:ChuanTianML/prompt-for-me#v0.5.0
 ```
 
 使用 pnpm 10 从 Git 安装时，可能需要在 Web profile 的 `pnpm-workspace.yaml` 中为 `allowBuilds` 添加 `dsh-prompt-for-me: true`，然后重新运行命令。`prepare` 脚本只复制 checkout 中的 Host 文件并包装 Client factory，不会下载任何内容。
@@ -39,6 +55,8 @@ dsh plugin --profile web add github:ChuanTianML/prompt-for-me#v0.4.0
 dsh plugin --profile web update dsh-prompt-for-me
 dsh plugin --profile web remove dsh-prompt-for-me
 ```
+
+当前 DeepSeek Harness 开发版本提供原生内联建议 API。如果该 API 不存在、但客户端仍提供已完成轮次投影，插件会退化为带“采用”和关闭控件的明确预览卡片。无论使用哪种展示形式，手动 Sparkles 流程都保持直接写入。
 
 ## 模型和 API Key
 
@@ -56,7 +74,7 @@ dsh plugin --profile web remove dsh-prompt-for-me
 
 ## 数据与隐私
 
-每次生成建议时，Host 可能把下列有界文本发送给当前选择的模型提供方：
+每次自动或显式生成建议时，Host 可能把下列有界文本发送给当前选择的模型提供方：
 
 - 当前草稿；
 - 当前会话最近 3 轮真人用户/助手文本；
@@ -70,7 +88,7 @@ Harness 会把工作区指令、运行时上下文和 Skill 列表记录为用�
 
 常见 API Key、token、password 和 Bearer token 会在模型调用前替换为 `[REDACTED_SECRET]`。插件不会收集附件、工具参数、文件、凭证或二进制内容；没有分析上报服务，只会调用 Harness 已选择的模型路由。
 
-交互记录只保存在当前浏览器 `localStorage` 的 `dsh.prompt-for-me.outcomes.v2`，每条包含会话 ID、最终动作、来源以及相关的原文/最终文本。V1 记录会自动迁移，原记录不会删除。可在浏览器控制台同时清除两个版本：
+交互记录只保存在当前浏览器 `localStorage` 的 `dsh.prompt-for-me.outcomes.v2`，每条包含会话 ID、最终动作、来源以及相关的原文/最终文本。仅仅看到或采用 ghost 不算正向反馈，实际发送后才会形成证据。V1 记录会自动迁移，原记录不会删除。可在浏览器控制台同时清除两个版本：
 
 ```js
 localStorage.removeItem('dsh.prompt-for-me.outcomes.v1')
@@ -79,7 +97,7 @@ localStorage.removeItem('dsh.prompt-for-me.outcomes.v2')
 
 DeepSeek Harness `0.1.0-rc.6` 尚未提供下游插件注册自定义持久化 session event 的公开接口。因此独立版不会把辅助模型请求和建议结果追加到 Harness session log；强行写入会导致原版运行时无法重新读取会话。这是独立版与实验性仓库内实现的主要差异，待官方开放事件注册接口后再补齐。
 
-生成 RPC 使用 NDJSON。每条候选只有在完整并通过校验后才会进入输入框；模型的半截 token 和不完整 JSON 不会写入草稿。鼠标悬停在 Sparkles 按钮上时，只显示当前动作和快捷键，例如“生成下一句（⌘⇧Space）”或“换一条（⌘⇧Space）”。
+生成 RPC 使用 NDJSON。每条候选只有在完整并通过校验后才会进入临时建议界面或草稿；模型的半截 token 和不完整 JSON 不会进入输入框。后台失败保持安静，显式触发失败会显示在 Sparkles 控件上。
 
 辅助请求始终使用 `off` reasoning。模型收到一段系统指令，以及一条包含 `current`、`currentSessionFeedback`、`userPreferenceMemory` 和 `currentCycleSkipped` 的 JSON 用户消息；不会收到工具定义或附件。
 
@@ -97,6 +115,7 @@ curl -sS -X POST -H 'content-type: application/json' \
 
 | 字段 | 默认值 | 含义 |
 | --- | ---: | --- |
+| `automatic` | `true` | 在符合条件的已完成轮次后展示一条不进入草稿的建议。 |
 | `maxCandidateBytes` | `4096` | 单条建议 UTF-8 上限。 |
 | `maxDraftBytes` | `32768` | 草稿或编辑结果 UTF-8 上限。 |
 | `maxCurrentCycleSkipped` | `10` | 作为下一次 Trigger 强负向上下文保留的已跳过建议数。 |

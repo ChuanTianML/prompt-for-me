@@ -1,7 +1,7 @@
 {
   "name": "dsh-prompt-for-me",
-  "version": "0.4.0",
-  "description": "Context-aware next-message suggestions for the DeepSeek Harness composer, always reviewed by the user before sending.",
+  "version": "0.5.0",
+  "description": "Automatic ghost-text next-message suggestions for DeepSeek Harness, with direct-fill manual generation.",
   "type": "commonjs",
   "main": "lib/index.cjs",
   "exports": {
@@ -12,6 +12,7 @@
   },
   "files": [
     "lib",
+    "assets",
     "cordis.patch.yml",
     "README.md",
     "README.zh.md",
