@@ -12,6 +12,7 @@ Prompt for Me (中文名：Prompt 嘴替) predicts the next message you may want
 
 - Generates only after a newly completed turn when the session is idle, plan mode is inactive, and the composer has exactly empty text, no images, and no queued intent.
 - Retains that completed turn while Host policy loads or the composer is temporarily ineligible, then generates once the requirements are met.
+- Retires suggestions from the preceding context when a newer turn completes, including after submissions that settle too quickly for an intermediate composer state to render.
 - Shows native inline ghost text on compatible Harness clients. Older clients use a small preview card without mutating the draft.
 - Accepts a ghost with Tab, Right Arrow, or the adjacent check control. Enter never accepts ghost text.
 - Hides the ghost when you type, offers it again if you clear the draft, and dismisses it with Escape.

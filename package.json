@@ -1,6 +1,6 @@
 {
   "name": "dsh-prompt-for-me",
-  "version": "0.5.1-local.0",
+  "version": "0.5.1-local.1",
   "description": "Automatic ghost-text next-message suggestions for DeepSeek Harness, with direct-fill manual generation.",
   "type": "commonjs",
   "main": "lib/index.cjs",

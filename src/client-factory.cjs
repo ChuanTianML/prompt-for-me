@@ -616,6 +616,20 @@ module.exports = function createClientPlugin(React, options) {
       store.seenTurnEndSeq = latest ? latest.endSeq : null
     } else if (latest && latest.endSeq !== store.seenTurnEndSeq && session.running !== true) {
       store.seenTurnEndSeq = latest.endSeq
+      const hadCandidate = activeCandidate(store) !== undefined
+      const hadPending = store.pending
+      if (hadPending) {
+        cancelPending(store)
+        store.requestSeq += 1
+      }
+      if (hadCandidate) clearCandidate(store, actions)
+      if (hadCandidate || hadPending) {
+        store.sourceDraft = ''
+        store.requestDraft = ''
+        store.phase = 'idle'
+        store.error = null
+        stateChanged = true
+      }
       store.pendingAutomaticTrigger = (!automaticPolicyReady || config.automatic)
         ? { kind: 'automatic', turn: latest.turn, endSeq: latest.endSeq }
         : undefined

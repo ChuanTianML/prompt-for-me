@@ -215,6 +215,36 @@ test('a later observation retries a failed Host configuration request', async ()
   assert.equal(calls.length, 1)
 })
 
+test('a completed turn retires a stale manual candidate when submission snapshots were missed', async () => {
+  browserStorage()
+  const calls = []
+  const plugin = createClientPlugin(React, {
+    automatic: true,
+    generate: suggestionGenerator(['Manual candidate.', 'Automatic candidate.'], calls).generate,
+  })
+  let draft = ''
+  let ghost
+  const actions = {
+    setDraft(value) { draft = value },
+    offerSuggestion(value) { ghost = value; return true },
+    dismissSuggestion() { ghost = undefined; return true },
+  }
+  plugin._testing.observe('s1', input(), session(), actions, true)
+  await plugin._testing.trigger('s1', draft, actions)
+  plugin._testing.observe('s1', input(draft), session(), actions, true)
+  draft = '不错'
+  plugin._testing.observe('s1', input(draft), session(), actions, true)
+
+  draft = ''
+  plugin._testing.observe('s1', input(draft), session(new Map([[1, 9]])), actions, true)
+  await nextTask()
+
+  assert.equal(calls.length, 2)
+  assert.deepEqual(calls[1].trigger, { kind: 'automatic', turn: 1, endSeq: 9 })
+  assert.equal(ghost.text, 'Automatic candidate.')
+  assert.equal(plugin._testing.storeFor('s1').presentation, 'ghost')
+})
+
 test('the manual trigger supersedes pending automatic work and still fills directly', async () => {
   browserStorage()
   let releaseAutomatic
