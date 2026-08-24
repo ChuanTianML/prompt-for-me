@@ -38,7 +38,7 @@ Prompt for Me (中文名：Prompt 嘴替) predicts the next message you may want
 The release tarball is the simplest option because it contains prebuilt Host and Client artifacts:
 
 ```sh
-dsh plugin --profile web add https://github.com/ChuanTianML/prompt-for-me/releases/download/v0.5.0/dsh-prompt-for-me-0.5.0.tgz
+dsh plugin --profile web add https://github.com/ChuanTianML/prompt-for-me/releases/download/v0.5.1/dsh-prompt-for-me-0.5.1.tgz
 ```
 
 Restart `dsh web` after installation.
@@ -46,7 +46,7 @@ Restart `dsh web` after installation.
 You may also install a pinned Git tag:
 
 ```sh
-dsh plugin --profile web add github:ChuanTianML/prompt-for-me#v0.5.0
+dsh plugin --profile web add github:ChuanTianML/prompt-for-me#v0.5.1
 ```
 
 pnpm 10 may ask you to allow the package's `prepare` script for a Git install. Add `dsh-prompt-for-me: true` under `allowBuilds` in the Web profile's `pnpm-workspace.yaml`, then run the command again. The script only copies the checked-out Host files and wraps the checked-out Client factory; it performs no downloads.

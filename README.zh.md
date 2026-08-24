@@ -38,7 +38,7 @@ Prompt for Me 会根据 DeepSeek Harness 中有界的会话历史和本地建议
 推荐安装 Release 中已经构建好的 tarball，不需要执行构建脚本：
 
 ```sh
-dsh plugin --profile web add https://github.com/ChuanTianML/prompt-for-me/releases/download/v0.5.0/dsh-prompt-for-me-0.5.0.tgz
+dsh plugin --profile web add https://github.com/ChuanTianML/prompt-for-me/releases/download/v0.5.1/dsh-prompt-for-me-0.5.1.tgz
 ```
 
 安装后重启 `dsh web`。
@@ -46,7 +46,7 @@ dsh plugin --profile web add https://github.com/ChuanTianML/prompt-for-me/releas
 也可以安装固定 Git 标签：
 
 ```sh
-dsh plugin --profile web add github:ChuanTianML/prompt-for-me#v0.5.0
+dsh plugin --profile web add github:ChuanTianML/prompt-for-me#v0.5.1
 ```
 
 使用 pnpm 10 从 Git 安装时，可能需要在 Web profile 的 `pnpm-workspace.yaml` 中为 `allowBuilds` 添加 `dsh-prompt-for-me: true`，然后重新运行命令。`prepare` 脚本只复制 checkout 中的 Host 文件并包装 Client factory，不会下载任何内容。
