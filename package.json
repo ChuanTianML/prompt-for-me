@@ -47,6 +47,20 @@
     "@deepseek-ai/dsh-client-ui-model-selection": ">=0.0.1-rc.3",
     "@deepseek-ai/dsh-client-ui-settings-plugins": ">=0.0.1-rc.3"
   },
+  "peerDependenciesMeta": {
+    "@deepseek-ai/dsh-client-runtime": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-client-ui-conversation": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-client-ui-model-selection": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-client-ui-settings-plugins": {
+      "optional": true
+    }
+  },
   "keywords": [
     "deepseek-harness",
     "dsh",

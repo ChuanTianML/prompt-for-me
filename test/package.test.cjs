@@ -19,6 +19,9 @@ test('package declares an installable DSH bundle and web client', () => {
     '@deepseek-ai/dsh-client-ui-model-selection',
     '@deepseek-ai/dsh-client-ui-settings-plugins',
   ])
+  for (const name of manifest.dsh.client.inject) {
+    assert.equal(manifest.peerDependenciesMeta[name].optional, true)
+  }
 })
 
 test('generated host and client artifacts are loadable and self-contained', () => {
