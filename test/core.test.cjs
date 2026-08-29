@@ -48,6 +48,44 @@ test('resolveConfig supplies the three-tier defaults and rejects invalid limits 
   assert.throws(() => core.resolveConfig({ automatic: 'yes' }), /automatic/)
 })
 
+test('user settings expose only automatic behavior, shortcut, and an atomic model route', () => {
+  const baseConfig = core.resolveConfig({
+    automatic: false,
+    shortcut: 'Mod+Alt+K',
+    provider: 'profile-provider',
+    model: 'profile-model',
+    timeoutMs: 9000,
+  })
+  assert.deepEqual(core.userSettingsBase(baseConfig), {
+    automatic: false,
+    shortcut: 'Mod+Alt+K',
+    route: { provider: 'profile-provider', model: 'profile-model' },
+  })
+
+  const following = core.applyUserSettings(baseConfig, {
+    automatic: true,
+    shortcut: 'disabled',
+    route: null,
+  })
+  assert.equal(following.automatic, true)
+  assert.equal(following.shortcut, 'disabled')
+  assert.equal(following.provider, undefined)
+  assert.equal(following.model, undefined)
+  assert.equal(following.timeoutMs, 9000)
+
+  const fixed = core.applyUserSettings(baseConfig, {
+    automatic: true,
+    shortcut: ' Mod+Shift+Space ',
+    route: { provider: ' fixed-provider ', model: ' fixed-model ' },
+  })
+  assert.equal(fixed.shortcut, 'Mod+Shift+Space')
+  assert.equal(fixed.provider, 'fixed-provider')
+  assert.equal(fixed.model, 'fixed-model')
+  assert.throws(() => core.applyUserSettings(baseConfig, {
+    automatic: true, shortcut: 'x', route: { provider: 'only-provider' },
+  }), /provider\/model pair/)
+})
+
 test('redactSecrets removes common credential forms', () => {
   assert.equal(
     core.redactSecrets('sk-abcdefghijklmnop token=secret-value Bearer abcdefghijklmnop'),

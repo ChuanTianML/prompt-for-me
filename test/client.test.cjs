@@ -290,7 +290,11 @@ test('the browser plugin registers native and fallback surfaces and accepts Host
   const registrations = []
   const injected = []
   const plugin = createClientPlugin(React, {
-    rpc: async () => ({
+    rpc: async (method) => method === 'settings' ? {
+      ok: true,
+      settings: { automatic: true, shortcut: 'Mod+Shift+Space', route: null },
+      writable: true,
+    } : ({
       ok: true,
       shortcut: 'disabled',
       automatic: true,
@@ -310,17 +314,93 @@ test('the browser plugin registers native and fallback surfaces and accepts Host
       return () => {}
     },
   }
-  plugin.apply({ get: (name) => name === 'slots' ? slots : undefined })
+  plugin.apply({
+    effect(install) { return install() },
+    get(name) {
+      if (name === 'slots') return slots
+      if (name === 'modelDirectories') return { directoryFor() { throw new Error('unused') } }
+      return undefined
+    },
+  })
   await nextTask()
 
-  assert.deepEqual(injected, ['conversation.input.right', 'conversation.input.dock'])
+  assert.deepEqual(plugin.inject, ['modelDirectories', 'slots'])
+  assert.deepEqual(injected, [
+    'conversation.input.right', 'conversation.input.dock', 'settings.plugin.item',
+  ])
   assert.deepEqual(registrations.map(({ entry }) => [entry.name, entry.id]), [
     ['conversation.input.right', 'prompt-for-me'],
     ['conversation.input.dock', 'prompt-for-me-preview'],
+    ['settings.plugin.item', 'prompt-for-me'],
   ])
   assert.equal(plugin._testing.config.automatic, true)
   assert.equal(plugin._testing.config.maxCurrentCycleSkipped, 7)
   delete global.document
+})
+
+test('disabling automatic suggestions cancels pending work and withdraws ghost text only', async () => {
+  browserStorage()
+  let release
+  const pending = new Promise((resolve) => { release = resolve })
+  const plugin = createClientPlugin(React, {
+    automatic: true,
+    generate: async (_args, onCandidate) => {
+      const candidate = await pending
+      await onCandidate(candidate)
+      return { ok: true }
+    },
+  })
+  let ghost
+  const actions = {
+    setDraft() {},
+    offerSuggestion(value) { ghost = value; return true },
+    dismissSuggestion(id) { if (ghost && ghost.id === id) ghost = undefined; return true },
+  }
+  plugin._testing.observe('s1', input(), session(), actions, true)
+  plugin._testing.observe('s1', input(), session(new Map([[1, 3]])), actions, true)
+  assert.equal(plugin._testing.storeFor('s1').pending, true)
+
+  plugin._testing.applyConfiguration({ ok: true, automatic: false })
+  assert.equal(plugin._testing.storeFor('s1').pending, false)
+  release('Too late.')
+  await nextTask()
+  assert.equal(ghost, undefined)
+
+  await plugin._testing.trigger('s1', '', actions)
+  assert.equal(plugin._testing.storeFor('s1').presentation, 'draft')
+})
+
+test('the plugin settings controller reads and replaces only its own three fields', async () => {
+  browserStorage()
+  let settings = { automatic: true, shortcut: 'Mod+Shift+Space', route: null }
+  const calls = []
+  const plugin = createClientPlugin(React, {
+    rpc: async (method, args) => {
+      calls.push({ method, args })
+      if (method === 'settings') return { ok: true, settings, writable: true }
+      if (method === 'update-settings') {
+        settings = args.settings
+        return { ok: true, settings, writable: true }
+      }
+      return { ok: false }
+    },
+  })
+  const controller = plugin._testing.createSettingsController()
+  await controller.load()
+  assert.deepEqual(controller.getSnapshot().value, settings)
+  assert.equal(controller.getSnapshot().writable, true)
+
+  const next = {
+    automatic: false,
+    shortcut: 'disabled',
+    route: { provider: 'fixed', model: 'fixed-model' },
+  }
+  await controller.replace(next)
+  assert.deepEqual(controller.getSnapshot().value, next)
+  assert.deepEqual(calls, [
+    { method: 'settings', args: {} },
+    { method: 'update-settings', args: { settings: next } },
+  ])
 })
 
 test('each accepted trigger requests one suggestion with the skipped cycle so far', async () => {
@@ -797,6 +877,15 @@ test('the portable shortcut accepts exactly one platform modifier', () => {
   assert.equal(matches({ key: ' ', code: 'Space', shiftKey: true, metaKey: false, ctrlKey: true, altKey: false }), true)
   assert.equal(matches({ key: ' ', code: 'Space', shiftKey: true, metaKey: true, ctrlKey: true, altKey: false }), false)
   assert.equal(matches({ key: ' ', code: 'Space', shiftKey: false, metaKey: true, ctrlKey: false, altKey: false }), false)
+  assert.equal(matches({
+    key: 'K', code: 'KeyK', shiftKey: false, metaKey: false, ctrlKey: true, altKey: true,
+  }, 'Mod+Alt+K'), true)
+  assert.equal(plugin._testing.shortcutFromEvent({
+    key: 'k', code: 'KeyK', shiftKey: false, metaKey: true, ctrlKey: false, altKey: true,
+  }), 'Mod+Alt+K')
+  assert.equal(plugin._testing.shortcutFromEvent({
+    key: 'k', code: 'KeyK', shiftKey: true, metaKey: false, ctrlKey: false, altKey: false,
+  }), undefined)
 })
 
 test('hover text is concise, localized, and state-specific', () => {

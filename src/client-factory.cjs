@@ -95,6 +95,74 @@ module.exports = function createClientPlugin(React, options) {
         return completion || { ok: false, message: 'Prompt for Me suggestion stream ended early.' }
       }
 
+  function createSettingsController() {
+    let snapshot = {
+      status: 'loading', value: undefined, revision: 0, writable: false,
+    }
+    let generation = 0
+    let tail = Promise.resolve()
+    const listeners = new Set()
+    const publish = (next) => {
+      snapshot = next
+      for (const listener of [...listeners]) listener()
+    }
+    const accept = (result, expectedGeneration) => {
+      if (expectedGeneration !== generation || !result || result.ok !== true) return false
+      publish({
+        status: 'ready',
+        value: normalizeUserSettings(result.settings),
+        revision: snapshot.revision + 1,
+        writable: result.writable === true,
+      })
+      return true
+    }
+    const load = () => {
+      const expectedGeneration = ++generation
+      const task = tail.then(async () => {
+        try {
+          const result = await rpc('settings', {})
+          if (!accept(result, expectedGeneration) && expectedGeneration === generation
+            && snapshot.status !== 'ready') {
+            publish({ ...snapshot, status: 'unavailable', writable: false })
+          }
+        } catch {
+          if (expectedGeneration === generation && snapshot.status !== 'ready') {
+            publish({ ...snapshot, status: 'unavailable', writable: false })
+          }
+        }
+      })
+      tail = task.catch(() => {})
+      return task
+    }
+    const replace = (settings) => {
+      const expectedGeneration = ++generation
+      const task = tail.then(async () => {
+        let result
+        try {
+          result = await rpc('update-settings', { settings })
+        } catch {
+          result = undefined
+        }
+        if (!accept(result, expectedGeneration) && expectedGeneration === generation) {
+          const refreshGeneration = ++generation
+          try {
+            accept(await rpc('settings', {}), refreshGeneration)
+          } catch {
+            // The last good snapshot remains usable and the card reports that the save did not land.
+          }
+        }
+      })
+      tail = task.catch(() => {})
+      return task
+    }
+    return {
+      getSnapshot: () => snapshot,
+      subscribe(listener) { listeners.add(listener); return () => listeners.delete(listener) },
+      load,
+      replace,
+    }
+  }
+
   function storeFor(sessionId) {
     let store = stores.get(sessionId)
     if (!store) {
@@ -466,6 +534,7 @@ module.exports = function createClientPlugin(React, options) {
 
   function applyConfiguration(result) {
     if (!result || result.ok !== true) return false
+    const automaticWasEnabled = config.automatic
     if (typeof result.shortcut === 'string') config.shortcut = result.shortcut
     if (typeof result.automatic === 'boolean') config.automatic = result.automatic
     if (Number.isSafeInteger(result.maxCurrentCycleSkipped)
@@ -486,13 +555,32 @@ module.exports = function createClientPlugin(React, options) {
     automaticPolicyReady = true
     for (const store of stores.values()) {
       if (config.automatic) maybeStartAutomatic(store)
-      else store.pendingAutomaticTrigger = undefined
+      else {
+        let changed = false
+        store.pendingAutomaticTrigger = undefined
+        if (store.pending && store.generationKind === 'automatic') {
+          cancelPending(store)
+          store.requestSeq += 1
+          store.phase = 'idle'
+          store.error = null
+          changed = true
+        }
+        if (store.presentation === 'ghost' || store.presentation === 'fallback'
+          || store.presentation === 'hidden') {
+          const actions = store.automaticObservation && store.automaticObservation.actions
+          clearCandidate(store, actions)
+          store.phase = 'idle'
+          store.error = null
+          changed = true
+        }
+        if (changed || automaticWasEnabled) emit(store)
+      }
     }
     return true
   }
 
-  function ensureConfiguration() {
-    if (automaticPolicyReady) return configurationRequest
+  function ensureConfiguration(force = false) {
+    if (!force && automaticPolicyReady) return configurationRequest
     if (configurationRequest !== null) return configurationRequest
     configurationRequest = Promise.resolve()
       .then(() => rpc('configuration', {}))
@@ -638,13 +726,46 @@ module.exports = function createClientPlugin(React, options) {
     if (stateChanged) emit(store)
   }
 
-  function shortcutMatches(event) {
-    if (config.shortcut === 'disabled' || event.repeat === true) return false
-    return (event.key === ' ' || event.code === 'Space')
-      && event.shiftKey === true
-      && event.altKey !== true
-      && ((event.metaKey === true && event.ctrlKey !== true)
-        || (event.ctrlKey === true && event.metaKey !== true))
+  function shortcutKey(event) {
+    if (event.key === ' ' || event.code === 'Space') return 'Space'
+    if (typeof event.key !== 'string' || event.key === '') return undefined
+    if (/^[a-z0-9]$/i.test(event.key)) return event.key.toUpperCase()
+    const supported = new Set([
+      'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight',
+      'Backspace', 'Delete', 'Home', 'End', 'PageUp', 'PageDown',
+      ',', '.', '/', ';', "'", '[', ']', '\\', '-', '=', '`',
+    ])
+    return supported.has(event.key) ? event.key : undefined
+  }
+
+  function shortcutFromEvent(event) {
+    if (!event || event.isComposing || event.repeat) return undefined
+    const key = shortcutKey(event)
+    if (key === undefined) return undefined
+    const mod = Boolean(event.metaKey) !== Boolean(event.ctrlKey)
+    if (!mod && !event.altKey) return undefined
+    return [
+      ...(mod ? ['Mod'] : []),
+      ...(!mod && event.ctrlKey ? ['Ctrl'] : []),
+      ...(!mod && event.metaKey ? ['Meta'] : []),
+      ...(event.altKey ? ['Alt'] : []),
+      ...(event.shiftKey ? ['Shift'] : []),
+      key,
+    ].join('+')
+  }
+
+  function shortcutMatches(event, shortcut = config.shortcut) {
+    if (shortcut === 'disabled' || event.repeat === true) return false
+    const parts = shortcut.split('+')
+    const key = parts.pop()
+    const required = new Set(parts)
+    const mod = Boolean(event.metaKey) !== Boolean(event.ctrlKey)
+    return shortcutKey(event) === key
+      && mod === required.has('Mod')
+      && (!mod && Boolean(event.ctrlKey)) === required.has('Ctrl')
+      && (!mod && Boolean(event.metaKey)) === required.has('Meta')
+      && Boolean(event.altKey) === required.has('Alt')
+      && Boolean(event.shiftKey) === required.has('Shift')
   }
 
   function isChinese() {
@@ -655,16 +776,23 @@ module.exports = function createClientPlugin(React, options) {
     }
   }
 
-  function shortcutDisplay() {
-    if (config.shortcut === 'disabled') return ''
-    if (config.shortcut !== 'Mod+Shift+Space') return config.shortcut
+  function shortcutDisplay(shortcut = config.shortcut) {
+    if (shortcut === 'disabled') return ''
     try {
       const platform = navigator.userAgentData && navigator.userAgentData.platform
         ? navigator.userAgentData.platform
         : navigator.platform
-      return /Mac|iPhone|iPad|iPod/i.test(platform) ? '⌘⇧Space' : 'Ctrl+Shift+Space'
+      if (/Mac|iPhone|iPad|iPod/i.test(platform)) {
+        return shortcut
+          .replace(/Mod\+/g, '⌘')
+          .replace(/Ctrl\+/g, '⌃')
+          .replace(/Meta\+/g, '⌘')
+          .replace(/Alt\+/g, '⌥')
+          .replace(/Shift\+/g, '⇧')
+      }
+      return shortcut.replace(/Mod\+/g, 'Ctrl+')
     } catch {
-      return 'Mod+Shift+Space'
+      return shortcut
     }
   }
 
@@ -695,6 +823,49 @@ module.exports = function createClientPlugin(React, options) {
     '.dsh-pfm-preview-text{flex:1;min-width:0;white-space:pre-wrap;overflow-wrap:anywhere;opacity:.72;font-size:13px;line-height:1.45}',
     '.dsh-pfm-preview-actions{display:flex;gap:6px}',
     '.dsh-pfm-preview-action{border:0;border-radius:7px;padding:5px 9px;background:color-mix(in srgb,currentColor 10%,transparent);color:inherit;cursor:pointer;font:inherit;font-size:12px}',
+    '.dsh-pfm-settings-card{list-style:none;border:1px solid var(--dsw-alias-border-l2);border-radius:12px;background:var(--dsw-alias-bg-layer-3);transition:border-color .16s,background .16s}',
+    '.dsh-pfm-settings-card:hover,.dsh-pfm-settings-card[data-open="true"]{border-color:var(--dsw-alias-label-dimmed)}',
+    '.dsh-pfm-settings-card[data-open="true"]{background:var(--dsw-alias-bg-layer-2)}',
+    '.dsh-pfm-settings-header{width:100%;appearance:none;border:0;background:none;color:inherit;font:inherit;text-align:left;cursor:pointer;display:flex;align-items:center;gap:12px;padding:14px 16px;border-radius:12px}',
+    '.dsh-pfm-settings-header:focus-visible,.dsh-pfm-settings-button:focus-visible,.dsh-pfm-settings-choice:focus-within,.dsh-pfm-switch input:focus-visible+span{outline:2px solid var(--dsw-alias-brand-primary);outline-offset:1px}',
+    '.dsh-pfm-settings-head-text{flex:1;min-width:0;display:flex;flex-direction:column;gap:4px}',
+    '.dsh-pfm-settings-name{font-size:15px;font-weight:600;line-height:1.4;color:var(--dsw-alias-label-primary)}',
+    '.dsh-pfm-settings-description{font-size:13px;line-height:1.5;color:var(--dsw-alias-label-tertiary)}',
+    '.dsh-pfm-settings-pending{flex:none;border-radius:999px;padding:1px 8px;font-size:11px;line-height:17px;font-weight:500;background:var(--dsw-alias-bg-module-platform);color:var(--dsw-alias-label-secondary)}',
+    '.dsh-pfm-settings-chevron{flex:none;color:var(--dsw-alias-label-tertiary);font-size:16px;transition:transform .16s}',
+    '.dsh-pfm-settings-chevron[data-open="true"]{transform:rotate(180deg)}',
+    '.dsh-pfm-settings-body{border-top:1px solid var(--dsw-alias-border-l2);margin:0 16px;padding-bottom:8px}',
+    '.dsh-pfm-settings-row{display:flex;align-items:center;gap:18px;padding:14px 0}',
+    '.dsh-pfm-settings-row+.dsh-pfm-settings-row,.dsh-pfm-settings-advanced{border-top:1px solid var(--dsw-alias-border-l2)}',
+    '.dsh-pfm-settings-copy{flex:1;min-width:0;display:flex;flex-direction:column;gap:3px}',
+    '.dsh-pfm-settings-label{font-size:13px;font-weight:500;line-height:1.5;color:var(--dsw-alias-label-primary)}',
+    '.dsh-pfm-settings-hint,.dsh-pfm-settings-status{margin:0;font-size:12px;line-height:1.5;color:var(--dsw-alias-label-tertiary)}',
+    '.dsh-pfm-settings-status[data-error="true"]{color:var(--dsw-alias-label-error)}',
+    '.dsh-pfm-switch{position:relative;display:inline-flex;flex:none;width:36px;height:20px}',
+    '.dsh-pfm-switch input{position:absolute;opacity:0;pointer-events:none}',
+    '.dsh-pfm-switch span{width:36px;height:20px;border-radius:999px;background:var(--dsw-alias-border-l1);transition:background .16s;box-shadow:inset 0 0 0 1px var(--dsw-alias-border-l2)}',
+    '.dsh-pfm-switch span:after{content:"";display:block;width:16px;height:16px;margin:2px;border-radius:50%;background:var(--dsw-alias-bg-layer-3);box-shadow:0 1px 3px color-mix(in srgb,#000 24%,transparent);transition:transform .16s}',
+    '.dsh-pfm-switch input:checked+span{background:var(--dsw-alias-brand-primary)}',
+    '.dsh-pfm-switch input:checked+span:after{transform:translateX(16px)}',
+    '.dsh-pfm-switch input:disabled+span{opacity:.45}',
+    '.dsh-pfm-settings-shortcut{display:flex;align-items:center;gap:8px;flex:none}',
+    '.dsh-pfm-settings-button{appearance:none;border:1px solid var(--dsw-alias-border-l2);border-radius:8px;min-height:34px;padding:5px 12px;background:var(--dsw-alias-bg-layer-3);color:var(--dsw-alias-label-secondary);font:inherit;font-size:12px;cursor:pointer}',
+    '.dsh-pfm-settings-button:hover:not(:disabled){color:var(--dsw-alias-label-primary);border-color:var(--dsw-alias-label-dimmed)}',
+    '.dsh-pfm-settings-button:disabled{opacity:.45;cursor:default}',
+    '.dsh-pfm-settings-key{min-width:120px;color:var(--dsw-alias-label-primary);font-variant-numeric:tabular-nums}',
+    '.dsh-pfm-settings-advanced-toggle{width:100%;appearance:none;border:0;background:none;color:var(--dsw-alias-label-secondary);font:inherit;font-size:12px;text-align:left;padding:13px 0;cursor:pointer}',
+    '.dsh-pfm-settings-choices{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;padding:0 0 12px}',
+    '.dsh-pfm-settings-choice{position:relative;display:flex;flex-direction:column;gap:3px;padding:10px 12px;border:1px solid var(--dsw-alias-border-l2);border-radius:9px;cursor:pointer;background:var(--dsw-alias-bg-layer-3)}',
+    '.dsh-pfm-settings-choice[data-selected="true"]{border-color:var(--dsw-alias-brand-primary);background:color-mix(in srgb,var(--dsw-alias-brand-primary) 7%,var(--dsw-alias-bg-layer-3))}',
+    '.dsh-pfm-settings-choice input{position:absolute;opacity:0;pointer-events:none}',
+    '.dsh-pfm-settings-choice strong{font-size:12px;font-weight:600;color:var(--dsw-alias-label-primary)}',
+    '.dsh-pfm-settings-choice small{font-size:11px;line-height:1.45;color:var(--dsw-alias-label-tertiary)}',
+    '.dsh-pfm-settings-select{width:100%;height:36px;margin:0 0 12px;padding:0 34px 0 11px;border:1px solid var(--dsw-alias-border-l2);border-radius:8px;background:var(--dsw-alias-bg-layer-3);color:var(--dsw-alias-label-primary);font:inherit;font-size:13px}',
+    '.dsh-pfm-settings-select:focus-visible{outline:none;border-color:var(--dsw-alias-brand-primary)}',
+    '.dsh-pfm-settings-footer{display:flex;align-items:center;justify-content:flex-end;gap:8px;padding:12px 0 4px;border-top:1px solid var(--dsw-alias-border-l2)}',
+    '.dsh-pfm-settings-footer .dsh-pfm-settings-status{flex:1}',
+    '.dsh-pfm-settings-save{background:var(--dsw-alias-label-primary);color:var(--dsw-alias-bg-layer-3);border-color:transparent}',
+    '@media(max-width:620px){.dsh-pfm-settings-row{align-items:flex-start;flex-direction:column;gap:9px}.dsh-pfm-settings-shortcut{width:100%}.dsh-pfm-settings-key{flex:1}.dsh-pfm-settings-choices{grid-template-columns:1fr}}',
     '@keyframes dsh-pfm-spin{to{transform:rotate(360deg)}}',
     '@media(prefers-reduced-motion:reduce){.dsh-pfm-button[data-loading="true"] .dsh-pfm-icon{animation:none}}',
   ].join('')
@@ -843,13 +1014,334 @@ module.exports = function createClientPlugin(React, options) {
         }, '×')))
   }
 
+  function normalizeUserSettings(value) {
+    const source = value && typeof value === 'object' ? value : {}
+    const route = source.route && typeof source.route === 'object'
+      && typeof source.route.provider === 'string' && source.route.provider !== ''
+      && typeof source.route.model === 'string' && source.route.model !== ''
+      ? { provider: source.route.provider, model: source.route.model }
+      : null
+    return {
+      automatic: typeof source.automatic === 'boolean' ? source.automatic : config.automatic,
+      shortcut: typeof source.shortcut === 'string' && source.shortcut !== ''
+        ? source.shortcut
+        : config.shortcut,
+      route,
+    }
+  }
+
+  function sameUserSettings(left, right) {
+    return left.automatic === right.automatic
+      && left.shortcut === right.shortcut
+      && ((left.route === null && right.route === null)
+        || (left.route !== null && right.route !== null
+          && left.route.provider === right.route.provider
+          && left.route.model === right.route.model))
+  }
+
+  function routeKey(route) {
+    return route === null ? '' : JSON.stringify([route.provider, route.model])
+  }
+
+  function modelOptions(groups) {
+    const rows = []
+    for (const group of Array.isArray(groups) ? groups : []) {
+      if (!group || typeof group.id !== 'string' || !Array.isArray(group.models)) continue
+      for (const model of group.models) {
+        if (!model || typeof model.id !== 'string') continue
+        rows.push({
+          provider: group.id,
+          model: model.id,
+          label: typeof model.name === 'string' && model.name !== '' ? model.name : model.id,
+          providerLabel: typeof group.name === 'string' && group.name !== '' ? group.name : group.id,
+        })
+      }
+    }
+    return rows
+  }
+
+  function PromptForMeSettingsCard(props) {
+    const zh = isChinese()
+    const copy = zh ? {
+      title: 'Prompt for Me / Prompt 嘴替',
+      description: '自动准备下一条消息，也可随时手动触发。',
+      expand: '展开设置', collapse: '收起设置', unsaved: '未保存',
+      automatic: 'Agent 回复后自动建议',
+      automaticHint: '回复完成且输入框为空时，以 Ghost Text 展示一条建议。',
+      shortcut: '手动生成快捷键',
+      shortcutHint: '在输入框中生成并直接填入文本；它不是接受 Ghost Text 的 Tab 键。',
+      record: '按下组合键', recording: '请按组合键…', disabled: '已关闭',
+      disableShortcut: '关闭', restoreShortcut: '恢复默认',
+      shortcutError: '请使用 Command/Ctrl 或 Alt 加一个普通按键。',
+      advanced: '高级设置', hideAdvanced: '收起高级设置', model: '建议模型',
+      follow: '跟随当前 Session', followHint: '使用当前会话已经选择的模型。',
+      fixed: '固定模型', fixedHint: '所有会话都使用指定模型生成建议。',
+      noModels: '请先打开一个普通 Session，模型列表将在这里显示。',
+      loadingModels: '正在读取当前 Session 的模型…', modelError: '模型列表读取失败，可稍后重试。',
+      configured: '当前配置', readOnly: '当前设置存储为只读，不能在这里修改。',
+      saveFailed: '保存没有生效，请检查 Host 设置服务。',
+      discard: '放弃', save: '保存', saving: '保存中…',
+    } : {
+      title: 'Prompt for Me',
+      description: 'Prepare the next message automatically, or trigger it whenever you need it.',
+      expand: 'Expand settings', collapse: 'Collapse settings', unsaved: 'Unsaved',
+      automatic: 'Suggest after the Agent replies',
+      automaticHint: 'When a reply finishes and the composer is empty, offer one suggestion as ghost text.',
+      shortcut: 'Manual generation shortcut',
+      shortcutHint: 'Generate and fill the composer. This is separate from Tab, which accepts ghost text.',
+      record: 'Press shortcut', recording: 'Press keys…', disabled: 'Disabled',
+      disableShortcut: 'Disable', restoreShortcut: 'Restore default',
+      shortcutError: 'Use Command/Ctrl or Alt with a regular key.',
+      advanced: 'Advanced settings', hideAdvanced: 'Hide advanced settings', model: 'Suggestion model',
+      follow: 'Follow current Session', followHint: 'Use the model already selected for the current session.',
+      fixed: 'Fixed model', fixedHint: 'Use one specified model for suggestions in every session.',
+      noModels: 'Open a regular Session first; its model directory will appear here.',
+      loadingModels: 'Loading models from the current Session…', modelError: 'Could not load models. Try again later.',
+      configured: 'Configured', readOnly: 'The current settings store is read-only.',
+      saveFailed: 'The settings were not saved. Check the Host settings service.',
+      discard: 'Discard', save: 'Save', saving: 'Saving…',
+    }
+    const snapshot = React.useSyncExternalStore(
+      props.pfmSettingsStore.subscribe,
+      props.pfmSettingsStore.getSnapshot,
+    )
+    const resolved = normalizeUserSettings(snapshot.value)
+    const [open, setOpen] = React.useState(false)
+    const [advanced, setAdvanced] = React.useState(false)
+    const [draft, setDraft] = React.useState(resolved)
+    const [baseline, setBaseline] = React.useState(resolved)
+    const baselineRef = React.useRef(resolved)
+    const [saving, setSaving] = React.useState(false)
+    const [failed, setFailed] = React.useState(false)
+    const [recording, setRecording] = React.useState(false)
+    const [shortcutError, setShortcutError] = React.useState(false)
+    const sessionId = props.useSessions((state) => state.current)
+    const [models, setModels] = React.useState({
+      current: null, groups: [], status: 'idle', error: null,
+    })
+
+    React.useEffect(() => {
+      const previous = baselineRef.current
+      baselineRef.current = resolved
+      setBaseline(resolved)
+      setDraft((current) => sameUserSettings(current, previous) ? resolved : current)
+    }, [snapshot.revision])
+
+    React.useEffect(() => {
+      if (!advanced || sessionId === undefined || !props.pfmModelDirectories) return undefined
+      let directory
+      try {
+        directory = props.pfmModelDirectories.directoryFor(sessionId)
+      } catch {
+        setModels({ current: null, groups: [], status: 'error', error: 'unavailable' })
+        return undefined
+      }
+      const publish = () => setModels(directory.store.getSnapshot())
+      publish()
+      const dispose = directory.store.subscribe(publish)
+      void directory.load().catch(publish)
+      return dispose
+    }, [advanced, sessionId, props.pfmModelDirectories])
+
+    if (snapshot.status !== 'ready') return null
+    const h = React.createElement
+    const dirty = !sameUserSettings(draft, baseline)
+    const writable = snapshot.writable === true
+    const options = modelOptions(models.groups)
+    const configuredKey = routeKey(draft.route)
+    if (draft.route !== null && !options.some((option) => routeKey(option) === configuredKey)) {
+      options.unshift({
+        provider: draft.route.provider,
+        model: draft.route.model,
+        label: draft.route.model,
+        providerLabel: `${draft.route.provider} · ${copy.configured}`,
+      })
+    }
+    const currentRoute = models.current && typeof models.current.provider === 'string'
+      && typeof models.current.model === 'string'
+      ? { provider: models.current.provider, model: models.current.model }
+      : null
+    const fixedFallback = draft.route || currentRoute || options[0] || null
+
+    const save = async () => {
+      if (!dirty || !writable || saving) return
+      setSaving(true)
+      setFailed(false)
+      await props.pfmSettingsScope.replace(draft)
+      const actual = normalizeUserSettings(props.pfmSettingsScope.getSnapshot().value)
+      const succeeded = sameUserSettings(actual, draft)
+      baselineRef.current = actual
+      setBaseline(actual)
+      if (succeeded) setDraft(actual)
+      setFailed(!succeeded)
+      setSaving(false)
+    }
+
+    const recordShortcut = (event) => {
+      if (!recording) return
+      event.preventDefault()
+      event.stopPropagation()
+      if (event.key === 'Escape') {
+        setRecording(false)
+        setShortcutError(false)
+        return
+      }
+      const next = shortcutFromEvent(event)
+      if (next === undefined) {
+        setShortcutError(true)
+        return
+      }
+      setDraft({ ...draft, shortcut: next })
+      setRecording(false)
+      setShortcutError(false)
+    }
+
+    const modelStatus = sessionId === undefined
+      ? copy.noModels
+      : models.status === 'loading'
+      ? copy.loadingModels
+      : models.status === 'error'
+      ? copy.modelError
+      : options.length === 0
+      ? copy.noModels
+      : null
+
+    return h('li', {
+      className: 'dsh-pfm-settings-card',
+      'data-open': String(open),
+    },
+    h('button', {
+      type: 'button', className: 'dsh-pfm-settings-header', 'aria-expanded': open,
+      'aria-label': `${open ? copy.collapse : copy.expand}: ${copy.title}`,
+      onClick: () => setOpen(!open),
+    },
+    h('span', { className: 'dsh-pfm-settings-head-text' },
+      h('span', { className: 'dsh-pfm-settings-name' }, copy.title),
+      h('span', { className: 'dsh-pfm-settings-description' }, copy.description)),
+    dirty ? h('span', { className: 'dsh-pfm-settings-pending' }, copy.unsaved) : null,
+    h('span', {
+      className: 'dsh-pfm-settings-chevron', 'data-open': String(open), 'aria-hidden': 'true',
+    }, '⌄')),
+    open ? h('div', { className: 'dsh-pfm-settings-body' },
+      !writable ? h('p', { className: 'dsh-pfm-settings-status', role: 'status' }, copy.readOnly) : null,
+      h('div', { className: 'dsh-pfm-settings-row' },
+        h('span', { className: 'dsh-pfm-settings-copy' },
+          h('span', { className: 'dsh-pfm-settings-label' }, copy.automatic),
+          h('span', { className: 'dsh-pfm-settings-hint' }, copy.automaticHint)),
+        h('label', { className: 'dsh-pfm-switch' },
+          h('input', {
+            type: 'checkbox', role: 'switch', checked: draft.automatic, disabled: !writable,
+            'aria-label': copy.automatic,
+            onChange: (event) => setDraft({ ...draft, automatic: event.target.checked }),
+          }), h('span'))),
+      h('div', { className: 'dsh-pfm-settings-row' },
+        h('span', { className: 'dsh-pfm-settings-copy' },
+          h('span', { className: 'dsh-pfm-settings-label' }, copy.shortcut),
+          h('span', { className: 'dsh-pfm-settings-hint' }, copy.shortcutHint),
+          shortcutError ? h('span', {
+            className: 'dsh-pfm-settings-status', 'data-error': 'true', role: 'status',
+          }, copy.shortcutError) : null),
+        h('span', { className: 'dsh-pfm-settings-shortcut' },
+          h('button', {
+            type: 'button', className: 'dsh-pfm-settings-button dsh-pfm-settings-key',
+            disabled: !writable, onClick: () => { setRecording(true); setShortcutError(false) },
+            onKeyDown: recordShortcut,
+          }, recording
+            ? copy.recording
+            : draft.shortcut === 'disabled' ? copy.disabled : shortcutDisplay(draft.shortcut)),
+          h('button', {
+            type: 'button', className: 'dsh-pfm-settings-button', disabled: !writable,
+            onClick: () => {
+              setRecording(false)
+              setShortcutError(false)
+              setDraft({ ...draft, shortcut: draft.shortcut === 'disabled'
+                ? 'Mod+Shift+Space' : 'disabled' })
+            },
+          }, draft.shortcut === 'disabled' ? copy.restoreShortcut : copy.disableShortcut))),
+      h('div', { className: 'dsh-pfm-settings-advanced' },
+        h('button', {
+          type: 'button', className: 'dsh-pfm-settings-advanced-toggle',
+          'aria-expanded': advanced, onClick: () => setAdvanced(!advanced),
+        }, advanced ? `⌃ ${copy.hideAdvanced}` : `⌄ ${copy.advanced}`),
+        advanced ? h(React.Fragment, null,
+          h('span', { className: 'dsh-pfm-settings-label' }, copy.model),
+          h('div', { className: 'dsh-pfm-settings-choices' },
+            h('label', {
+              className: 'dsh-pfm-settings-choice', 'data-selected': String(draft.route === null),
+            }, h('input', {
+              type: 'radio', name: 'dsh-pfm-model-route', checked: draft.route === null,
+              disabled: !writable, onChange: () => setDraft({ ...draft, route: null }),
+            }), h('strong', null, copy.follow), h('small', null, copy.followHint)),
+            h('label', {
+              className: 'dsh-pfm-settings-choice',
+              'data-selected': String(draft.route !== null),
+            }, h('input', {
+              type: 'radio', name: 'dsh-pfm-model-route', checked: draft.route !== null,
+              disabled: !writable || fixedFallback === null,
+              onChange: () => fixedFallback && setDraft({
+                ...draft,
+                route: { provider: fixedFallback.provider, model: fixedFallback.model },
+              }),
+            }), h('strong', null, copy.fixed), h('small', null, copy.fixedHint))),
+          draft.route !== null && options.length > 0 ? h('select', {
+            className: 'dsh-pfm-settings-select', value: routeKey(draft.route), disabled: !writable,
+            'aria-label': copy.model,
+            onChange: (event) => {
+              const selected = options.find((option) => routeKey(option) === event.target.value)
+              if (selected) setDraft({
+                ...draft, route: { provider: selected.provider, model: selected.model },
+              })
+            },
+          }, options.map((option) => h('option', {
+            key: routeKey(option), value: routeKey(option),
+          }, `${option.providerLabel} · ${option.label}`))) : null,
+          modelStatus ? h('p', {
+            className: 'dsh-pfm-settings-status',
+            'data-error': String(models.status === 'error'), role: 'status',
+          }, modelStatus) : null) : null),
+      h('div', { className: 'dsh-pfm-settings-footer' },
+        failed ? h('p', {
+          className: 'dsh-pfm-settings-status', 'data-error': 'true', role: 'status',
+        }, copy.saveFailed) : null,
+        h('button', {
+          type: 'button', className: 'dsh-pfm-settings-button', disabled: !dirty || saving,
+          onClick: () => {
+            setDraft(baseline)
+            setFailed(false)
+            setRecording(false)
+          },
+        }, copy.discard),
+        h('button', {
+          type: 'button', className: 'dsh-pfm-settings-button dsh-pfm-settings-save',
+          disabled: !dirty || !writable || saving, onClick: () => { void save() },
+        }, saving ? copy.saving : copy.save))
+    ) : null)
+  }
+
   return {
-    inject: ['slots'],
+    inject: ['modelDirectories', 'slots'],
     apply(ctx) {
       insertStyles()
       const slots = ctx.get('slots')
       if (!slots) throw new Error('dsh-prompt-for-me: slots service is unavailable')
-      void ensureConfiguration()
+      const settingsScope = createSettingsController()
+      const settingsStore = {
+        getSnapshot: () => settingsScope.getSnapshot(),
+        subscribe: (listener) => settingsScope.subscribe(listener),
+      }
+      const applySettingsSnapshot = () => {
+        const snapshot = settingsScope.getSnapshot()
+        if (snapshot.status !== 'ready') return
+        const value = normalizeUserSettings(snapshot.value)
+        applyConfiguration({ ok: true, automatic: value.automatic, shortcut: value.shortcut })
+      }
+      applySettingsSnapshot()
+      ctx.effect(
+        () => settingsScope.subscribe(applySettingsSnapshot),
+        'dsh-prompt-for-me: settings updates',
+      )
+      void settingsScope.load()
+      void ensureConfiguration(true)
       slots.inject('conversation.input.right', () => slots.register({
         name: 'conversation.input.right',
         id: 'prompt-for-me',
@@ -862,15 +1354,31 @@ module.exports = function createClientPlugin(React, options) {
         order: 89,
         label: 'Prompt for Me preview / Prompt 嘴替预览',
       }, PromptForMePreview))
+      slots.inject('settings.plugin.item', () => slots.register({
+        name: 'settings.plugin.item',
+        id: 'prompt-for-me',
+        order: 30,
+        label: 'Prompt for Me / Prompt 嘴替',
+        inject: () => ({
+          pfmSettingsScope: settingsScope,
+          pfmSettingsStore: settingsStore,
+          pfmModelDirectories: ctx.get('modelDirectories'),
+        }),
+      }, PromptForMeSettingsCard))
     },
     _testing: {
       activeCandidate,
+      applyConfiguration,
       config,
+      createSettingsController,
+      modelOptions,
+      normalizeUserSettings,
       observe,
       latestTurnEnd,
       readOutcomes,
       recordOutcome,
       shortcutMatches,
+      shortcutFromEvent,
       storeFor,
       tooltipText,
       trigger,

@@ -1,6 +1,6 @@
 {
   "name": "dsh-prompt-for-me",
-  "version": "0.5.1",
+  "version": "0.6.0",
   "description": "Automatic ghost-text next-message suggestions for DeepSeek Harness, with direct-fill manual generation.",
   "type": "commonjs",
   "main": "lib/index.cjs",
@@ -31,14 +31,21 @@
     "client": {
       "inject": [
         "@deepseek-ai/dsh-client-runtime",
-        "@deepseek-ai/dsh-client-ui-conversation"
+        "@deepseek-ai/dsh-client-ui-conversation",
+        "@deepseek-ai/dsh-client-ui-model-selection",
+        "@deepseek-ai/dsh-client-ui-settings-plugins"
       ],
       "platform": "web"
     }
   },
+  "dependencies": {
+    "@deepseek-ai/schemastery": "^3.18.1"
+  },
   "peerDependencies": {
     "@deepseek-ai/dsh-client-runtime": ">=0.0.1-rc.1",
-    "@deepseek-ai/dsh-client-ui-conversation": ">=0.0.1-rc.1"
+    "@deepseek-ai/dsh-client-ui-conversation": ">=0.0.1-rc.1",
+    "@deepseek-ai/dsh-client-ui-model-selection": ">=0.0.1-rc.3",
+    "@deepseek-ai/dsh-client-ui-settings-plugins": ">=0.0.1-rc.3"
   },
   "keywords": [
     "deepseek-harness",

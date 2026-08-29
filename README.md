@@ -38,7 +38,7 @@ Prompt for Me (中文名：Prompt 嘴替) predicts the next message you may want
 The release tarball is the simplest option because it contains prebuilt Host and Client artifacts:
 
 ```sh
-dsh plugin --profile web add https://github.com/ChuanTianML/prompt-for-me/releases/download/v0.5.1/dsh-prompt-for-me-0.5.1.tgz
+dsh plugin --profile web add https://github.com/ChuanTianML/prompt-for-me/releases/download/v0.6.0/dsh-prompt-for-me-0.6.0.tgz
 ```
 
 Restart `dsh web` after installation.
@@ -46,7 +46,7 @@ Restart `dsh web` after installation.
 You may also install a pinned Git tag:
 
 ```sh
-dsh plugin --profile web add github:ChuanTianML/prompt-for-me#v0.5.1
+dsh plugin --profile web add github:ChuanTianML/prompt-for-me#v0.6.0
 ```
 
 pnpm 10 may ask you to allow the package's `prepare` script for a Git install. Add `dsh-prompt-for-me: true` under `allowBuilds` in the Web profile's `pnpm-workspace.yaml`, then run the command again. The script only copies the checked-out Host files and wraps the checked-out Client factory; it performs no downloads.
@@ -60,11 +60,21 @@ dsh plugin --profile web remove dsh-prompt-for-me
 
 Current DeepSeek Harness builds provide the native inline suggestion API. If that API is absent but completed-turn projection is available, the plugin falls back to an explicit preview card with Use and dismiss controls. The manual Sparkles workflow remains direct-fill in either presentation.
 
+## Web UI settings
+
+Open **Settings → Plugins → Configurable**, then expand **Prompt for Me**. The card follows Harness settings structure, tokens, spacing, and staged Save/Discard behavior. Saved values live in the shared Host user-settings document and take effect immediately without a restart.
+
+- **Suggest after the Agent replies** is on by default. Turning it off withdraws any unaccepted automatic ghost and stops future automatic generation; the manual Sparkles Trigger remains available.
+- **Manual generation shortcut** defaults to `Mod+Shift+Space`. Select the current shortcut and press a new Command/Ctrl or Alt combination, or disable the shortcut. Harness still owns ghost acceptance, which defaults to Tab.
+- **Advanced settings → Suggestion model** follows the current Session by default. It can instead pin one provider/model from the current Harness model directory.
+
+The UI deliberately omits context-range controls, quick/personalized modes, a personalization reset, token limits, and timeouts. The plugin owns those product decisions instead of asking users to tune suggestion quality.
+
 ## Model and API key
 
 The plugin calls `ctx.llm` on the Harness Host. By default it reuses the current session's provider and model, falling back to the Harness default selection. The provider therefore uses the API key already configured in DeepSeek Harness. The browser never receives or reads that key, and this plugin has no separate key.
 
-To pin an auxiliary model, set both `provider` and `model` in `cordis.patch.yml` or an overriding profile patch:
+Most users can pin an auxiliary model from the Web UI advanced settings. Deployment maintainers may also set both `provider` and `model` as a composition base in `cordis.patch.yml` or an overriding profile patch; a saved Web UI choice takes precedence:
 
 ```yaml
 - id: prompt-for-me
@@ -90,12 +100,7 @@ Harness records injected workspace instructions, runtime context, and skill cata
 
 Common API-key, token, password, and Bearer-token patterns are replaced with `[REDACTED_SECRET]` before the model call. Attachments, tool arguments, files, credentials, and binary blocks are not collected. The plugin has no analytics endpoint and sends data only to the model route already selected in Harness.
 
-Interaction records are stored only in this browser's `localStorage` under `dsh.prompt-for-me.outcomes.v2`. Each record contains its session ID, final action, origin, and the relevant original/final text. Merely seeing or adopting ghost text is not positive feedback; it becomes evidence only after submission. Version 1 records migrate automatically and remain untouched. Clear both versions in the browser console with:
-
-```js
-localStorage.removeItem('dsh.prompt-for-me.outcomes.v1')
-localStorage.removeItem('dsh.prompt-for-me.outcomes.v2')
-```
+Interaction records are stored only in this browser's `localStorage` under `dsh.prompt-for-me.outcomes.v2`. Each record contains its session ID, final action, origin, and the relevant original/final text. Merely seeing or adopting ghost text is not positive feedback; it becomes evidence only after submission. Version 1 records migrate automatically and remain untouched. The plugin does not expose a reset control that asks users to manage this history.
 
 DeepSeek Harness `0.1.0-rc.6` does not expose downstream registration for custom durable session-event types. For that reason, the standalone plugin does not append its auxiliary model request or outcomes to the Harness session log; doing so would make persisted sessions unreadable to the stock runtime. This is the main difference from the experimental in-tree implementation and will be revisited when a public event-registration API exists.
 
@@ -113,7 +118,7 @@ curl -sS -X POST -H 'content-type: application/json' \
 
 ## Configuration
 
-All generation limits are configurable in `cordis.patch.yml`:
+The Web UI exposes only the three everyday choices above. The table below documents `cordis.patch.yml` composition controls for deployment maintainers; ordinary users are not expected to tune the stable generation limits:
 
 | Field | Default | Meaning |
 | --- | ---: | --- |

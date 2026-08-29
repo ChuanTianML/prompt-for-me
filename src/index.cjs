@@ -1,17 +1,34 @@
 'use strict'
 
 const { randomUUID } = require('node:crypto')
+const z = require('@deepseek-ai/schemastery')
 const {
+  applyUserSettings,
   buildSuggestionInput,
   parseCandidateLine,
   resolveConfig,
+  resolveUserSettings,
   systemPrompt,
+  userSettingsBase,
   utf8Bytes,
 } = require('./core.cjs')
 
 const RPC_PATH = '/dsh-prompt-for-me/rpc'
+const SETTINGS_NAMESPACE = 'prompt-for-me'
 const MAX_RPC_BYTES = 256 * 1024
 const MAX_METRICS = 50
+
+const UserSettingsSchema = z.object({
+  automatic: z.boolean().default(true),
+  shortcut: z.string().default('Mod+Shift+Space'),
+  route: z.union([
+    z.const(null),
+    z.object({
+      provider: z.string().required(),
+      model: z.string().required(),
+    }),
+  ]).default(null),
+})
 
 function roundMs(value) {
   return Math.round(value * 10) / 10
@@ -436,13 +453,12 @@ function writeNdjson(response, event) {
   return true
 }
 
-function registerRoute(ctx, config) {
+function registerRoute(ctx, getConfig, getSettingsBinding) {
   const webServer = service(ctx, 'webServer')
   if (!webServer || typeof webServer.register !== 'function') {
     throw new Error('prompt-for-me: webServer service is unavailable')
   }
   const metrics = createMetricsStore(ctx)
-  const generate = createGenerateStream(ctx, config, { record: (metric) => metrics.record(metric) })
   return webServer.register({
     kind: 'exact',
     path: RPC_PATH,
@@ -466,15 +482,51 @@ function registerRoute(ctx, config) {
         return
       }
       if (body.method === 'configuration') {
+        const config = getConfig()
         json(response, 200, {
           ok: true,
           shortcut: config.shortcut,
           automatic: config.automatic,
+          route: config.provider === undefined
+            ? null
+            : { provider: config.provider, model: config.model },
           maxCurrentCycleSkipped: config.maxCurrentCycleSkipped,
           maxCurrentCycleSkippedBytes: config.maxCurrentCycleSkippedBytes,
           maxLocalOutcomes: config.maxLocalOutcomes,
           maxLocalOutcomesBytes: config.maxLocalOutcomesBytes,
         })
+        return
+      }
+      if (body.method === 'settings') {
+        const binding = getSettingsBinding()
+        if (binding === undefined) {
+          json(response, 200, { ok: false, code: 'SETTINGS_UNAVAILABLE' })
+          return
+        }
+        json(response, 200, {
+          ok: true,
+          settings: resolveUserSettings(binding.scope.get()),
+          writable: binding.settings.writable === true,
+        })
+        return
+      }
+      if (body.method === 'update-settings') {
+        const binding = getSettingsBinding()
+        if (binding === undefined) {
+          json(response, 200, { ok: false, code: 'SETTINGS_UNAVAILABLE' })
+          return
+        }
+        try {
+          const next = resolveUserSettings(body.args && body.args.settings, userSettingsBase(getConfig()))
+          await binding.scope.replace(next)
+          json(response, 200, {
+            ok: true,
+            settings: resolveUserSettings(binding.scope.get()),
+            writable: binding.settings.writable === true,
+          })
+        } catch {
+          json(response, 200, { ok: false, code: 'SETTINGS_REJECTED' })
+        }
         return
       }
       if (body.method === 'metrics') {
@@ -485,6 +537,10 @@ function registerRoute(ctx, config) {
         json(response, 404, { ok: false, code: 'UNKNOWN_METHOD' })
         return
       }
+      const config = getConfig()
+      const generate = createGenerateStream(ctx, config, {
+        record: (metric) => metrics.record(metric),
+      })
       response.writeHead(200, {
         'content-type': 'application/x-ndjson; charset=utf-8',
         'cache-control': 'no-store',
@@ -514,19 +570,57 @@ function registerRoute(ctx, config) {
   })
 }
 
+function registerSettings(ctx, baseConfig, onChange) {
+  const settings = service(ctx, 'settings')
+  if (!settings || typeof settings.register !== 'function') {
+    throw new Error('prompt-for-me: settings service is unavailable')
+  }
+  const scope = settings.register(SETTINGS_NAMESPACE, UserSettingsSchema, {
+    base: userSettingsBase(baseConfig),
+    applies: 'live',
+    validate: (value) => {
+      applyUserSettings(baseConfig, value)
+    },
+  })
+  onChange(applyUserSettings(baseConfig, scope.get()))
+  ctx.effect(
+    () => scope.watch((next) => onChange(applyUserSettings(baseConfig, next))),
+    'dsh-prompt-for-me: live settings',
+  )
+  return { scope, settings }
+}
+
 module.exports = {
   name: 'dsh-prompt-for-me',
   apply(ctx, inputConfig) {
-    const config = resolveConfig(inputConfig)
+    const baseConfig = resolveConfig(inputConfig)
+    let currentConfig = baseConfig
+    let settingsBinding
     if (typeof ctx.inject === 'function') {
+      ctx.inject(['settings'], (settingsCtx) => {
+        const binding = registerSettings(settingsCtx, baseConfig, (next) => {
+          currentConfig = next
+        })
+        settingsBinding = binding
+        settingsCtx.effect(() => () => {
+          if (settingsBinding === binding) {
+            settingsBinding = undefined
+            currentConfig = baseConfig
+          }
+        }, 'dsh-prompt-for-me: settings binding')
+      })
       ctx.inject(['webServer'], (hostCtx) => {
-        hostCtx.effect(() => registerRoute(hostCtx, config), 'dsh-prompt-for-me: rpc route')
+        hostCtx.effect(
+          () => registerRoute(hostCtx, () => currentConfig, () => settingsBinding),
+          'dsh-prompt-for-me: rpc route',
+        )
       })
       return
     }
-    return registerRoute(ctx, config)
+    return registerRoute(ctx, () => currentConfig, () => settingsBinding)
   },
   _testing: {
+    UserSettingsSchema,
     collectCandidate,
     createMetricsStore,
     createGenerateHandler,
@@ -535,6 +629,8 @@ module.exports = {
     historicalEvents,
     normalizeCandidateIdentity,
     readJson,
+    registerRoute,
+    registerSettings,
     resolveRoute,
     sameOrigin,
   },

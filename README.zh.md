@@ -38,7 +38,7 @@ Prompt for Me 会根据 DeepSeek Harness 中有界的会话历史和本地建议
 推荐安装 Release 中已经构建好的 tarball，不需要执行构建脚本：
 
 ```sh
-dsh plugin --profile web add https://github.com/ChuanTianML/prompt-for-me/releases/download/v0.5.1/dsh-prompt-for-me-0.5.1.tgz
+dsh plugin --profile web add https://github.com/ChuanTianML/prompt-for-me/releases/download/v0.6.0/dsh-prompt-for-me-0.6.0.tgz
 ```
 
 安装后重启 `dsh web`。
@@ -46,7 +46,7 @@ dsh plugin --profile web add https://github.com/ChuanTianML/prompt-for-me/releas
 也可以安装固定 Git 标签：
 
 ```sh
-dsh plugin --profile web add github:ChuanTianML/prompt-for-me#v0.5.1
+dsh plugin --profile web add github:ChuanTianML/prompt-for-me#v0.6.0
 ```
 
 使用 pnpm 10 从 Git 安装时，可能需要在 Web profile 的 `pnpm-workspace.yaml` 中为 `allowBuilds` 添加 `dsh-prompt-for-me: true`，然后重新运行命令。`prepare` 脚本只复制 checkout 中的 Host 文件并包装 Client factory，不会下载任何内容。
@@ -60,11 +60,21 @@ dsh plugin --profile web remove dsh-prompt-for-me
 
 当前 DeepSeek Harness 开发版本提供原生内联建议 API。如果该 API 不存在、但客户端仍提供已完成轮次投影，插件会退化为带“采用”和关闭控件的明确预览卡片。无论使用哪种展示形式，手动 Sparkles 流程都保持直接写入。
 
+## Web UI 设置
+
+打开 **设置 → 插件 → 可配置**，展开 **Prompt for Me / Prompt 嘴替**。设置卡片沿用 Harness 的设置层级、颜色、间距和保存交互，并把选择持久化到统一的 Host 用户设置中；保存后立即生效，无须重启。
+
+- **Agent 回复后自动建议**：默认开启。关闭后会撤下尚未采用的自动 Ghost Text，并停止后续自动生成；Sparkles 手动 Trigger 仍然可用。
+- **手动生成快捷键**：默认是 `Mod+Shift+Space`。点击当前组合键后直接按下新的 Command/Ctrl 或 Alt 组合键，也可以单独关闭快捷键。Ghost Text 的采用键仍由 Harness 管理，默认是 Tab。
+- **高级设置 → 建议模型**：默认跟随当前 Session 已选择的模型；也可以固定到当前 Harness 模型目录中的某个 provider/model。
+
+界面不提供“参考范围”“快速/个性化模式”“重置个性化记录”或内部 token/超时参数。这些行为由插件统一选择，以免把上下文质量和个性化策略的复杂性转嫁给用户。
+
 ## 模型和 API Key
 
 插件在 Harness Host 上调用 `ctx.llm`。默认优先复用当前会话的 provider/model，没有时使用 Harness 默认模型，因此使用的就是 DeepSeek Harness 已配置的 API Key。浏览器拿不到也不会读取这个 Key，插件没有单独的 Key。
 
-如需固定辅助模型，可在 `cordis.patch.yml` 或更高优先级的 profile patch 中同时配置：
+普通用户可在 Web UI 的高级设置中固定辅助模型。部署维护者也可在 `cordis.patch.yml` 或更高优先级的 profile patch 中同时配置一个基础值；用户保存的 Web UI 设置优先于这个基础值：
 
 ```yaml
 - id: prompt-for-me
@@ -90,12 +100,7 @@ Harness 会把工作区指令、运行时上下文和 Skill 列表记录为用�
 
 常见 API Key、token、password 和 Bearer token 会在模型调用前替换为 `[REDACTED_SECRET]`。插件不会收集附件、工具参数、文件、凭证或二进制内容；没有分析上报服务，只会调用 Harness 已选择的模型路由。
 
-交互记录只保存在当前浏览器 `localStorage` 的 `dsh.prompt-for-me.outcomes.v2`，每条包含会话 ID、最终动作、来源以及相关的原文/最终文本。仅仅看到或采用 ghost 不算正向反馈，实际发送后才会形成证据。V1 记录会自动迁移，原记录不会删除。可在浏览器控制台同时清除两个版本：
-
-```js
-localStorage.removeItem('dsh.prompt-for-me.outcomes.v1')
-localStorage.removeItem('dsh.prompt-for-me.outcomes.v2')
-```
+交互记录只保存在当前浏览器 `localStorage` 的 `dsh.prompt-for-me.outcomes.v2`，每条包含会话 ID、最终动作、来源以及相关的原文/最终文本。仅仅看到或采用 ghost 不算正向反馈，实际发送后才会形成证据。V1 记录会自动迁移，原记录不会删除。插件不提供要求用户管理这些记录的重置入口。
 
 DeepSeek Harness `0.1.0-rc.6` 尚未提供下游插件注册自定义持久化 session event 的公开接口。因此独立版不会把辅助模型请求和建议结果追加到 Harness session log；强行写入会导致原版运行时无法重新读取会话。这是独立版与实验性仓库内实现的主要差异，待官方开放事件注册接口后再补齐。
 
@@ -113,7 +118,7 @@ curl -sS -X POST -H 'content-type: application/json' \
 
 ## 配置
 
-所有生成限制均可在 `cordis.patch.yml` 中配置：
+Web UI 只公开上述三个对日常交互有明确价值的选项。下表是面向部署维护者的 `cordis.patch.yml` 组合参数；生成限制保留稳定默认值，不要求普通用户调整：
 
 | 字段 | 默认值 | 含义 |
 | --- | ---: | --- |

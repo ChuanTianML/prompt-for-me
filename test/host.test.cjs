@@ -267,6 +267,117 @@ test('generate honors a fixed route override', async () => {
   assert.equal(requests[0].model, 'fixed-model')
 })
 
+test('Host settings register as live and preserve hidden product-owned limits', () => {
+  let registered
+  let watcher
+  const scope = {
+    get: () => ({ automatic: false, shortcut: 'Mod+Alt+K', route: null }),
+    watch(callback) { watcher = callback; return () => {} },
+  }
+  const settings = {
+    register(namespace, schema, options) {
+      registered = { namespace, schema, options }
+      return scope
+    },
+  }
+  const applied = []
+  const ctx = {
+    get: (name) => name === 'settings' ? settings : undefined,
+    effect: (install) => install(),
+  }
+  const base = resolveConfig({
+    provider: 'profile', model: 'profile-model', timeoutMs: 4321,
+  })
+  host._testing.registerSettings(ctx, base, (next) => applied.push(next))
+
+  assert.equal(registered.namespace, 'prompt-for-me')
+  assert.equal(registered.options.applies, 'live')
+  assert.deepEqual(registered.options.base, {
+    automatic: true,
+    shortcut: 'Mod+Shift+Space',
+    route: { provider: 'profile', model: 'profile-model' },
+  })
+  assert.equal(applied[0].provider, undefined)
+  assert.equal(applied[0].timeoutMs, 4321)
+
+  watcher({
+    automatic: true,
+    shortcut: 'disabled',
+    route: { provider: 'fixed', model: 'fixed-model' },
+  })
+  assert.equal(applied[1].automatic, true)
+  assert.equal(applied[1].shortcut, 'disabled')
+  assert.equal(applied[1].provider, 'fixed')
+  assert.equal(applied[1].model, 'fixed-model')
+  assert.equal(applied[1].timeoutMs, 4321)
+  assert.doesNotThrow(() => registered.options.validate({
+    automatic: true, shortcut: 'Mod+Shift+Space', route: null,
+  }))
+})
+
+test('the plugin RPC reads and atomically replaces its Host settings section', async () => {
+  let route
+  let current = { automatic: true, shortcut: 'Mod+Shift+Space', route: null }
+  const base = resolveConfig({ timeoutMs: 7654 })
+  const binding = {
+    settings: { writable: true },
+    scope: {
+      get: () => current,
+      async replace(next) { current = next },
+    },
+  }
+  const ctx = {
+    get(name) {
+      if (name === 'webServer') {
+        return { register(entry) { route = entry; return () => {} } }
+      }
+      return undefined
+    },
+  }
+  host._testing.registerRoute(
+    ctx,
+    () => require('../src/core.cjs').applyUserSettings(base, current),
+    () => binding,
+  )
+
+  async function call(method, args) {
+    const request = new EventEmitter()
+    request.method = 'POST'
+    request.headers = { host: '127.0.0.1:3080' }
+    request.destroy = () => {}
+    const response = new EventEmitter()
+    let text = ''
+    response.writeHead = () => {}
+    response.end = (value = '') => { text += value }
+    const pending = route.handler(request, response)
+    request.emit('data', Buffer.from(JSON.stringify({ method, args })))
+    request.emit('end')
+    await pending
+    return JSON.parse(text)
+  }
+
+  assert.deepEqual(await call('settings', {}), {
+    ok: true,
+    settings: current,
+    writable: true,
+  })
+  const next = {
+    automatic: false,
+    shortcut: 'disabled',
+    route: { provider: 'fixed', model: 'fixed-model' },
+  }
+  assert.deepEqual(await call('update-settings', { settings: next }), {
+    ok: true,
+    settings: next,
+    writable: true,
+  })
+  assert.deepEqual(current, next)
+  const configuration = await call('configuration', {})
+  assert.equal(configuration.automatic, false)
+  assert.equal(configuration.shortcut, 'disabled')
+  assert.deepEqual(configuration.route, next.route)
+})
+
 test('generate publishes the complete suggestion before the model finishes', async () => {
   let releaseFinish
   const finish = new Promise((resolve) => { releaseFinish = resolve })

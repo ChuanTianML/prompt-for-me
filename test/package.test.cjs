@@ -12,7 +12,13 @@ test('package declares an installable DSH bundle and web client', () => {
   assert.equal(manifest.dsh.bundle.patch, './cordis.patch.yml')
   assert.equal(manifest.dsh.client.platform, 'web')
   assert.equal(manifest.keywords.includes('dsh-plugin'), true)
-  assert.equal(manifest.dependencies, undefined)
+  assert.equal(manifest.dependencies['@deepseek-ai/schemastery'], '^3.18.1')
+  assert.deepEqual(manifest.dsh.client.inject, [
+    '@deepseek-ai/dsh-client-runtime',
+    '@deepseek-ai/dsh-client-ui-conversation',
+    '@deepseek-ai/dsh-client-ui-model-selection',
+    '@deepseek-ai/dsh-client-ui-settings-plugins',
+  ])
 })
 
 test('generated host and client artifacts are loadable and self-contained', () => {
