@@ -361,7 +361,12 @@ module.exports = function createClientPlugin(React, options) {
       }
       store.suggestionId = suggestion.id
       store.awaitingDraftAck = null
-      store.presentation = offerSuggestion(actions, suggestion) ? 'ghost' : 'fallback'
+      if (offerSuggestion(actions, suggestion)) store.presentation = 'ghost'
+      else if (!actions || typeof actions.offerSuggestion !== 'function') store.presentation = 'fallback'
+      else {
+        clearCandidate(store, actions)
+        store.phase = 'idle'
+      }
     } else {
       store.suggestionId = undefined
       store.presentation = 'draft'
@@ -426,6 +431,7 @@ module.exports = function createClientPlugin(React, options) {
       }, async (candidate) => {
         if (seq !== store.requestSeq || controller.signal.aborted
           || typeof candidate !== 'string' || candidate.trim() === '') return
+        if (kind === 'automatic' && !automaticObservationIsEligible(store.automaticObservation)) return
         if (store.observedDraft === draft) {
           showCandidate(sessionId, store, actions, candidate.trim(), kind)
         }
@@ -509,14 +515,18 @@ module.exports = function createClientPlugin(React, options) {
       && (!Array.isArray(input.queue) || input.queue.length === 0)
   }
 
+  function automaticObservationIsEligible(observation) {
+    return observation !== undefined && observation.automaticEligible === true
+      && observation.session.running !== true && observation.session.removed !== true
+      && semanticComposerIsEmpty(observation.input)
+  }
+
   function maybeStartAutomatic(store) {
     const triggerKind = store.pendingAutomaticTrigger
     const observation = store.automaticObservation
     if (triggerKind === undefined || observation === undefined
       || !automaticPolicyReady || !config.automatic
-      || observation.automaticEligible !== true
-      || observation.session.running === true || observation.session.removed === true
-      || !semanticComposerIsEmpty(observation.input)
+      || !automaticObservationIsEligible(observation)
       || activeCandidate(store) !== undefined || store.pending) return false
     store.pendingAutomaticTrigger = undefined
     store.sourceDraft = ''
@@ -651,10 +661,21 @@ module.exports = function createClientPlugin(React, options) {
         stateChanged = true
       } else if (store.presentation === 'hidden') {
         const suggestion = { id: store.suggestionId, text: candidate }
-        store.presentation = offerSuggestion(actions, suggestion) ? 'ghost' : 'fallback'
-        store.phase = 'ready'
+        if (offerSuggestion(actions, suggestion)) store.presentation = 'ghost'
+        else if (!actions || typeof actions.offerSuggestion !== 'function') store.presentation = 'fallback'
+        else clearCandidate(store, actions)
+        store.phase = activeCandidate(store) === undefined ? 'idle' : 'ready'
         stateChanged = true
       }
+    }
+
+    if (store.pending && store.generationKind === 'automatic'
+      && !automaticObservationIsEligible(store.automaticObservation)) {
+      cancelPending(store)
+      store.requestSeq += 1
+      store.phase = store.presentation === 'draft' ? 'ready' : 'idle'
+      store.error = null
+      stateChanged = true
     }
 
     candidate = activeCandidate(store)
@@ -1039,6 +1060,14 @@ module.exports = function createClientPlugin(React, options) {
           && left.route.model === right.route.model))
   }
 
+  async function saveSettingsDraft(scope, submitted, setDraft) {
+    await scope.replace(submitted)
+    const actual = normalizeUserSettings(scope.getSnapshot().value)
+    const succeeded = sameUserSettings(actual, submitted)
+    if (succeeded) setDraft((current) => sameUserSettings(current, submitted) ? actual : current)
+    return { actual, succeeded }
+  }
+
   function routeKey(route) {
     return route === null ? '' : JSON.stringify([route.provider, route.model])
   }
@@ -1112,6 +1141,7 @@ module.exports = function createClientPlugin(React, options) {
     const [baseline, setBaseline] = React.useState(resolved)
     const baselineRef = React.useRef(resolved)
     const [saving, setSaving] = React.useState(false)
+    const savingRef = React.useRef(false)
     const [failed, setFailed] = React.useState(false)
     const [recording, setRecording] = React.useState(false)
     const [shortcutError, setShortcutError] = React.useState(false)
@@ -1124,7 +1154,10 @@ module.exports = function createClientPlugin(React, options) {
       const previous = baselineRef.current
       baselineRef.current = resolved
       setBaseline(resolved)
-      setDraft((current) => sameUserSettings(current, previous) ? resolved : current)
+      // A newer edit can equal the old baseline while an earlier save is pending.
+      if (!savingRef.current) {
+        setDraft((current) => sameUserSettings(current, previous) ? resolved : current)
+      }
     }, [snapshot.revision])
 
     React.useEffect(() => {
@@ -1164,17 +1197,21 @@ module.exports = function createClientPlugin(React, options) {
     const fixedFallback = draft.route || currentRoute || options[0] || null
 
     const save = async () => {
-      if (!dirty || !writable || saving) return
+      if (!dirty || !writable || savingRef.current) return
+      savingRef.current = true
       setSaving(true)
       setFailed(false)
-      await props.pfmSettingsScope.replace(draft)
-      const actual = normalizeUserSettings(props.pfmSettingsScope.getSnapshot().value)
-      const succeeded = sameUserSettings(actual, draft)
-      baselineRef.current = actual
-      setBaseline(actual)
-      if (succeeded) setDraft(actual)
-      setFailed(!succeeded)
-      setSaving(false)
+      try {
+        const { actual, succeeded } = await saveSettingsDraft(props.pfmSettingsScope, draft, setDraft)
+        baselineRef.current = actual
+        setBaseline(actual)
+        setFailed(!succeeded)
+      } catch {
+        setFailed(true)
+      } finally {
+        savingRef.current = false
+        setSaving(false)
+      }
     }
 
     const recordShortcut = (event) => {
@@ -1373,6 +1410,7 @@ module.exports = function createClientPlugin(React, options) {
       createSettingsController,
       modelOptions,
       normalizeUserSettings,
+      saveSettingsDraft,
       observe,
       latestTurnEnd,
       readOutcomes,

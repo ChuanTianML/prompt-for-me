@@ -53,6 +53,157 @@ function nextTask() {
   return new Promise((resolve) => setImmediate(resolve))
 }
 
+for (const change of [
+  { name: 'an image is attached', input: { imageIds: ['photo'] } },
+  { name: 'an intent is queued', input: { queue: [{}] } },
+  { name: 'plan mode starts', eligible: false },
+  { name: 'the session starts running', session: { running: true } },
+  { name: 'the session is removed', session: { removed: true } },
+  { name: 'the composer starts adjudicating', input: { phase: 'adjudicating' } },
+]) {
+  test(`automatic generation retires immediately when ${change.name}`, async () => {
+    browserStorage()
+    let deliver, finish, signal
+    let offers = 0
+    let requests = 0
+    const plugin = createClientPlugin(React, {
+      automatic: true,
+      generate: (_args, onCandidate, requestSignal) => {
+        requests += 1
+        deliver = onCandidate
+        signal = requestSignal
+        return new Promise((resolve) => { finish = resolve })
+      },
+    })
+    const actions = { setDraft: () => assert.fail('automatic generation changed the draft'),
+      offerSuggestion: () => { offers += 1; return false } }
+    const completed = new Map([[1, 5]])
+    plugin._testing.observe('s1', input(), session(), actions)
+    plugin._testing.observe('s1', input(), session(completed), actions)
+    plugin._testing.observe('s1', input('', undefined, change.input),
+      session(completed, change.session), actions, change.eligible !== false)
+    assert.equal(signal.aborted, true)
+    assert.equal(plugin._testing.storeFor('s1').pending, false)
+    // Even a transport that delivers after cancellation cannot resurrect the candidate.
+    plugin._testing.observe('s1', input(), session(completed), actions)
+    await deliver('Continue the old task.')
+    finish({ ok: true })
+    await nextTask()
+    assert.equal(offers, 0)
+    assert.equal(requests, 1)
+    assert.equal(plugin._testing.storeFor('s1').candidate, undefined)
+    assert.equal(plugin._testing.storeFor('s1').phase, 'idle')
+  })
+}
+
+for (const rejection of ['false', 'throw']) {
+  test(`native suggestion rejection (${rejection}) does not become a fallback preview`, async () => {
+    browserStorage()
+    const plugin = createClientPlugin(React, {
+      automatic: true, generate: suggestionGenerator(['Next.']).generate,
+    })
+    const actions = { offerSuggestion: () => {
+      if (rejection === 'throw') throw new Error('composer unavailable')
+      return false
+    } }
+    plugin._testing.observe('s1', input(), session(), actions)
+    plugin._testing.observe('s1', input(), session(new Map([[1, 5]])), actions)
+    await nextTask()
+    assert.equal(plugin._testing.storeFor('s1').candidate, undefined)
+    assert.equal(plugin._testing.storeFor('s1').presentation, 'none')
+    assert.equal(plugin._testing.storeFor('s1').phase, 'idle')
+  })
+}
+
+test('a hidden suggestion rejected on reoffer does not become a fallback preview', async () => {
+  browserStorage()
+  const plugin = createClientPlugin(React, {
+    automatic: true, generate: suggestionGenerator(['Next.']).generate,
+  })
+  let accept = true
+  const actions = { offerSuggestion: () => accept }
+  const completed = session(new Map([[1, 5]]))
+  plugin._testing.observe('s1', input(), session(), actions)
+  plugin._testing.observe('s1', input(), completed, actions)
+  await nextTask()
+  plugin._testing.observe('s1', input('My draft'), completed, actions)
+  assert.equal(plugin._testing.storeFor('s1').presentation, 'hidden')
+  accept = false
+  plugin._testing.observe('s1', input(), completed, actions)
+  assert.equal(plugin._testing.storeFor('s1').candidate, undefined)
+  assert.equal(plugin._testing.storeFor('s1').presentation, 'none')
+})
+
+test('accepting a streamed ghost preserves its draft and submission feedback after cancellation', async () => {
+  const values = browserStorage()
+  let finish, signal, ghost
+  const plugin = createClientPlugin(React, { automatic: true,
+    generate: async (_args, emitCandidate, requestSignal) => {
+      signal = requestSignal
+      await emitCandidate('Accepted before finish.')
+      return new Promise((resolve) => { finish = resolve })
+    } })
+  const actions = { offerSuggestion: (suggestion) => { ghost = suggestion; return true } }
+  const completed = session(new Map([[1, 5]]))
+  plugin._testing.observe('s1', input(), session(), actions)
+  plugin._testing.observe('s1', input(), completed, actions)
+  await nextTask()
+  plugin._testing.observe('s1', input('', ghost), completed, actions)
+  plugin._testing.observe('s1', input(ghost.text), completed, actions)
+  assert.equal(signal.aborted, true)
+  assert.equal(plugin._testing.storeFor('s1').presentation, 'draft')
+  assert.equal(plugin._testing.storeFor('s1').candidate, ghost.text)
+  finish({ ok: true })
+  await nextTask()
+  plugin._testing.observe('s1', input(ghost.text, undefined, { phase: 'submitting' }), completed, actions)
+  const outcomes = JSON.parse(values.get('dsh.prompt-for-me.outcomes.v2'))
+  assert.equal(outcomes.length, 1)
+  assert.equal(outcomes[0].origin, 'suggestion-exact')
+  assert.equal(outcomes[0].finalText, ghost.text)
+})
+
+for (const edit of [
+  { automatic: true },
+  { shortcut: 'Mod+Enter' },
+  { route: { provider: 'another-provider', model: 'another-model' } },
+]) {
+  test(`saving settings preserves a newer ${Object.keys(edit)[0]} edit`, async () => {
+    const plugin = createClientPlugin(React, { automatic: true })
+    const submitted = { automatic: false, shortcut: 'Mod+Shift+Space', route: null }
+    let draft = submitted
+    let stored, finish
+    const scope = {
+      replace: (value) => new Promise((resolve) => { finish = () => { stored = value; resolve() } }),
+      getSnapshot: () => ({ value: stored }),
+    }
+    const saving = plugin._testing.saveSettingsDraft(scope, submitted, (update) => { draft = update(draft) })
+    draft = { ...draft, ...edit }
+    const newer = draft
+    finish()
+    const result = await saving
+    assert.equal(result.succeeded, true)
+    assert.deepEqual(result.actual, submitted)
+    assert.equal(draft, newer)
+    assert.notDeepEqual(draft, stored)
+  })
+}
+
+test('saving unchanged settings acknowledges persisted values and a rejected save preserves the draft', async () => {
+  const plugin = createClientPlugin(React, { automatic: true })
+  const submitted = { automatic: false, shortcut: 'Mod+Shift+Space', route: null }
+  let draft = submitted
+  const scope = { replace: async () => {}, getSnapshot: () => ({ value: submitted }) }
+  const update = (fn) => { draft = fn(draft) }
+  const saved = await plugin._testing.saveSettingsDraft(scope, submitted, update)
+  assert.equal(saved.succeeded, true)
+  assert.equal(draft, saved.actual)
+  scope.getSnapshot = () => ({ value: { ...submitted, automatic: true } })
+  const before = draft
+  const rejected = await plugin._testing.saveSettingsDraft(scope, submitted, update)
+  assert.equal(rejected.succeeded, false)
+  assert.equal(draft, before)
+})
+
 test('a completed turn offers native ghost text without changing the draft', async () => {
   const values = browserStorage()
   const calls = []

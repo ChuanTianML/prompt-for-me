@@ -60,6 +60,78 @@ function contextWith(streamFactory) {
   return { ctx: { get: (name) => services[name] }, requests, session }
 }
 
+for (const stage of ['listSessions', 'readSession']) {
+  for (const cause of ['timeout', 'disconnect']) {
+    test(`${cause} ends a pending ${stage} without continuing history or starting the model`, async (t) => {
+      t.mock.timers.enable({ apis: ['setTimeout'] })
+      const { ctx, requests } = contextWith(async function * () {
+        yield { type: 'text-delta', text: '{"candidate":"Too late."}\n' }
+        yield { type: 'finish', reason: { kind: 'stop' } }
+      })
+      const query = ctx.get('sessionQuery')
+      let release, rejectRead
+      const pending = new Promise((resolve, reject) => { release = resolve; rejectRead = reject })
+      let reads = 0
+      query.listSessions = () => stage === 'listSessions' ? pending : Promise.resolve([
+        { header: { id: 'history-1' } }, { header: { id: 'history-2' } },
+      ])
+      query.readSession = () => { reads += 1; return pending }
+      const controller = new AbortController()
+      const metrics = []
+      const generate = host._testing.createGenerateStream(ctx, resolveConfig({ timeoutMs: 15 }), {
+        record: (metric) => metrics.push(metric),
+      })
+      let result
+      const task = generate({ sessionId: 'session-1', draft: 'Inspect this.',
+        trigger: { kind: 'manual' }, currentCycleSkipped: [] },
+      () => assert.fail('cancelled request emitted a candidate'), controller.signal)
+        .then((value) => { result = value })
+      await new Promise((resolve) => setImmediate(resolve))
+      if (cause === 'timeout') t.mock.timers.tick(15)
+      else controller.abort()
+      await new Promise((resolve) => setImmediate(resolve))
+      const beforeReadFinished = result
+      // Late storage failures must also be consumed, without an unhandled rejection.
+      if (cause === 'disconnect') rejectRead(new Error('late storage error'))
+      else release(stage === 'listSessions' ? [{ header: { id: 'history-1' } }] : { events: [] })
+      await task
+      await new Promise((resolve) => setImmediate(resolve))
+      assert.equal(beforeReadFinished?.code, cause === 'timeout' ? 'TIMEOUT' : 'CLIENT_DISCONNECTED')
+      assert.equal(requests.length, 0)
+      assert.equal(reads, stage === 'listSessions' ? 0 : 1)
+      assert.equal(metrics.length, 1)
+      assert.equal(metrics[0].code, result.code)
+    })
+  }
+}
+
+test('a previously disconnected request starts neither history reads nor a model call', async () => {
+  const { ctx, requests } = contextWith(async function * () {})
+  ctx.get('sessionQuery').listSessions = () => assert.fail('history started after disconnect')
+  const controller = new AbortController()
+  controller.abort()
+  const result = await host._testing.createGenerateStream(ctx, resolveConfig({}))({
+    sessionId: 'session-1', draft: 'Inspect this.', trigger: { kind: 'manual' }, currentCycleSkipped: [],
+  }, () => assert.fail('candidate after disconnect'), controller.signal)
+  assert.equal(result.code, 'CLIENT_DISCONNECTED')
+  assert.equal(requests.length, 0)
+})
+
+test('ordinary historical storage failures still allow generation from the current conversation', async () => {
+  for (const stage of ['listSessions', 'readSession']) {
+    const { ctx } = contextWith(async function * () {
+      yield { type: 'text-delta', text: '{"candidate":"Continue."}\n' }
+      yield { type: 'finish', reason: { kind: 'stop' } }
+    })
+    ctx.get('sessionQuery')[stage] = async () => { throw new Error('unreadable history') }
+    const result = await host._testing.createGenerateHandler(ctx, resolveConfig({}))({
+      sessionId: 'session-1', draft: '', trigger: { kind: 'manual' }, currentCycleSkipped: [],
+    })
+    assert.equal(result.ok, true)
+    assert.equal(result.candidate, 'Continue.')
+  }
+})
+
 test('generate reuses the session route and sends bounded contextual JSON without tools', async () => {
   const { ctx, requests } = contextWith(async function * () {
     yield { type: 'text-delta', text: `${candidateLines('A')}\n` }
