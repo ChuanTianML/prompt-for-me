@@ -4,9 +4,29 @@
 
 [![npm version](https://img.shields.io/npm/v/dsh-prompt-for-me)](https://www.npmjs.com/package/dsh-prompt-for-me) [![npm downloads](https://img.shields.io/npm/dm/dsh-prompt-for-me)](https://www.npmjs.com/package/dsh-prompt-for-me) [![GitHub stars](https://img.shields.io/github/stars/ChuanTianML/prompt-for-me)](https://github.com/ChuanTianML/prompt-for-me)
 
-Prompt for Me 会根据 DeepSeek Harness 中有界的会话历史和本地建议交互，推测你下一句可能想说什么。每当 Agent 完成一轮，它会安静地展示一条 ghost text；在你采用前，草稿仍然为空，插件也绝不会代替你发送。
+Prompt for Me（Prompt 嘴替）会根据对话，在 DeepSeek Harness 的输入框里准备下一句。你可以直接采用、修改后再发，或点击按钮换个建议。插件帮你起草，是否发送由你决定。
 
-![Prompt for Me 交互流程](assets/interaction-flow.svg)
+## 看看实际效果
+
+**1. 回复结束，自动备好下一句**
+
+输入框空闲时，浅灰色建议会自动出现。此时它还没有写入草稿，也不会自动发送。
+
+![Agent 回答后，输入框中出现浅灰色的下一句建议，旁边提供采用按钮](assets/product/automatic-suggestion.zh.jpg)
+
+**2. 一键采用，按自己的意思修改**
+
+按 **Tab** 或点击 **✓**，建议就会变成可编辑的文字。图中又补上了“每条不超过20字”，是否发送仍由你决定。
+
+![采用建议后，文字进入草稿，并追加了每条不超过20字的要求，发送按钮已可用](assets/product/accept-and-edit.zh.jpg)
+
+**3. 想换个方向，点击星光按钮**
+
+点击发送按钮左侧的 **✦**，或按默认快捷键 **⌘⇧Space / Ctrl+Shift+Space**，即可主动生成下一句并填入草稿。例如，换成按 T-7 天、T-1 天和上线当天来追问。
+
+![手动生成后，输入框中出现按上线时间点组织检查的新追问，消息尚未发送](assets/product/manual-generation.zh.jpg)
+
+*以上为真实产品截图，演示项目与对话内容均为虚构；已裁去私人会话列表、工作区信息和运行统计。*
 
 ## 功能
 

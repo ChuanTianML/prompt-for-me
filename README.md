@@ -4,9 +4,29 @@
 
 [![npm version](https://img.shields.io/npm/v/dsh-prompt-for-me)](https://www.npmjs.com/package/dsh-prompt-for-me) [![npm downloads](https://img.shields.io/npm/dm/dsh-prompt-for-me)](https://www.npmjs.com/package/dsh-prompt-for-me) [![GitHub stars](https://img.shields.io/github/stars/ChuanTianML/prompt-for-me)](https://github.com/ChuanTianML/prompt-for-me)
 
-Prompt for Me (中文名：Prompt 嘴替) predicts the next message you may want to send from the DeepSeek Harness composer. After a completed agent turn, it quietly offers one suggestion as ghost text. Your draft stays empty until you accept it, and the plugin never submits on your behalf.
+Prompt for Me prepares your next message in the DeepSeek Harness composer. After the agent replies, you can accept a suggestion, edit it, or generate another. The plugin helps you draft; you decide when to send.
 
-![Prompt for Me interaction flow](assets/interaction-flow.svg)
+## See it in action
+
+**1. Your next message, ready after the reply**
+
+When the composer is idle, a suggestion appears in light gray. It is not part of your draft yet, and nothing is sent automatically.
+
+![After the agent replies, a next-message suggestion appears in light gray with a checkmark to accept it](assets/product/automatic-suggestion.en.jpg)
+
+**2. Accept it, then make it yours**
+
+Press **Tab** or click **✓** to turn the suggestion into editable text. Here, we add “Keep it under eight words.” You still decide when to send.
+
+![The accepted suggestion becomes an editable draft, with an added eight-word limit and an enabled send button](assets/product/accept-and-edit.en.jpg)
+
+**3. Want another direction? Click the sparkles**
+
+Click **✦**, immediately left of Send, or use the default shortcut **⌘⇧Space / Ctrl+Shift+Space**. A fresh next message goes straight into the draft for you to review or edit.
+
+![A manually generated follow-up is filled into the composer and remains unsent](assets/product/manual-generation.en.jpg)
+
+*Real product screenshots using a fictional project and demo conversations. Private session lists, workspace information, and runtime statistics are outside the captured area.*
 
 ## What it does
 
