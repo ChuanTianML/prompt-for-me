@@ -14,3 +14,14 @@ jobs:
           node-version: 24
       - run: npm ci
       - run: npm run check
+      - name: Install isolated UI test tools
+        run: npm install --prefix "$RUNNER_TEMP/pfm-ui" --ignore-scripts --no-package-lock --no-audit --no-fund react@18.3.1 react-dom@18.3.1 jsdom@29.1.1
+      - name: Check settings UI from source
+        run: npm run test:ui
+        env:
+          NODE_PATH: ${{ runner.temp }}/pfm-ui/node_modules
+      - name: Check settings UI from the client bundle
+        run: npm run test:ui
+        env:
+          NODE_PATH: ${{ runner.temp }}/pfm-ui/node_modules
+          PFM_UI_BUNDLE_PATH: ${{ github.workspace }}/lib/client.cjs

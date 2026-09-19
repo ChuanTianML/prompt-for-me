@@ -12,6 +12,7 @@ Prompt for Me (中文名：Prompt 嘴替) predicts the next message you may want
 
 - Generates only after a newly completed turn when the session is idle, plan mode is inactive, and the composer has exactly empty text, no images, and no queued intent.
 - Retains that completed turn while Host policy loads or the composer is temporarily ineligible, then generates once the requirements are met.
+- Cancels an in-flight automatic request if the composer becomes ineligible; late results cannot restore the suggestion. An explicit rejection by the native composer does not open a fallback preview.
 - Retires suggestions from the preceding context when a newer turn completes, including after submissions that settle too quickly for an intermediate composer state to render.
 - Shows native inline ghost text on compatible Harness clients. Older clients use a small preview card without mutating the draft.
 - Accepts a ghost with Tab, Right Arrow, or the adjacent check control. Enter never accepts ghost text.
@@ -38,7 +39,7 @@ Prompt for Me (中文名：Prompt 嘴替) predicts the next message you may want
 The release tarball is the simplest option because it contains prebuilt Host and Client artifacts:
 
 ```sh
-dsh plugin --profile web add https://github.com/ChuanTianML/prompt-for-me/releases/download/v0.6.0/dsh-prompt-for-me-0.6.0.tgz
+dsh plugin --profile web add https://github.com/ChuanTianML/prompt-for-me/releases/download/v0.6.1/dsh-prompt-for-me-0.6.1.tgz
 ```
 
 Restart `dsh web` after installation.
@@ -46,7 +47,7 @@ Restart `dsh web` after installation.
 You may also install a pinned Git tag:
 
 ```sh
-dsh plugin --profile web add github:ChuanTianML/prompt-for-me#v0.6.0
+dsh plugin --profile web add github:ChuanTianML/prompt-for-me#v0.6.1
 ```
 
 pnpm 10 may ask you to allow the package's `prepare` script for a Git install. Add `dsh-prompt-for-me: true` under `allowBuilds` in the Web profile's `pnpm-workspace.yaml`, then run the command again. The script only copies the checked-out Host files and wraps the checked-out Client factory; it performs no downloads.
@@ -63,6 +64,8 @@ Current DeepSeek Harness builds provide the native inline suggestion API. If tha
 ## Web UI settings
 
 Open **Settings → Plugins → Configurable**, then expand **Prompt for Me**. The card follows Harness settings structure, tokens, spacing, and staged Save/Discard behavior. Saved values live in the shared Host user-settings document and take effect immediately without a restart.
+
+You can continue editing during a save. These newer edits remain unsaved until you click Save again.
 
 - **Suggest after the Agent replies** is on by default. Turning it off withdraws any unaccepted automatic ghost and stops future automatic generation; the manual Sparkles Trigger remains available.
 - **Manual generation shortcut** defaults to `Mod+Shift+Space`. Select the current shortcut and press a new Command/Ctrl or Alt combination, or disable the shortcut. Harness still owns ghost acceptance, which defaults to Tab.
@@ -139,7 +142,7 @@ The Web UI exposes only the three everyday choices above. The table below docume
 | `maxLocalOutcomes` | `50` | Browser-local interaction records retained. |
 | `maxLocalOutcomesBytes` | `131072` | Shared JSON budget for browser-local records and their RPC copy. |
 | `maxOutputTokens` | `2048` | Auxiliary model output budget. |
-| `timeoutMs` | `30000` | Auxiliary model-call timeout. |
+| `timeoutMs` | `30000` | Suggestion request timeout, including historical session reads and the auxiliary model call. |
 | `shortcut` | `Mod+Shift+Space` | Portable Trigger, or `disabled`. |
 
 ## Development
@@ -151,6 +154,8 @@ npm run check
 ```
 
 The command rebuilds the static Host/Client artifacts, runs the Node test suite, and verifies the npm package contents.
+
+Real React settings regression tests run separately against source and built clients; see [UI test setup](https://github.com/ChuanTianML/prompt-for-me/blob/main/test-ui/README.md).
 
 ## License
 

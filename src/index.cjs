@@ -139,28 +139,44 @@ function resolveRoute(ctx, session, config) {
     : undefined
 }
 
-async function historicalEvents(ctx, sessionId, config) {
+// Stop waiting even when the historical storage provider cannot cancel its own I/O.
+function readUntilAborted(read, signal) {
+  if (!signal) return read()
+  signal.throwIfAborted()
+  return new Promise((resolve, reject) => {
+    const abort = () => reject(signal.reason)
+    signal.addEventListener('abort', abort, { once: true })
+    Promise.resolve().then(() => {
+      signal.throwIfAborted()
+      return read()
+    }).then(resolve, reject).finally(() => signal.removeEventListener('abort', abort))
+  })
+}
+
+async function historicalEvents(ctx, sessionId, config, signal) {
   const query = service(ctx, 'sessionQuery')
   if (!query || config.maxHistorySessions === 0
     || typeof query.listSessions !== 'function' || typeof query.readSession !== 'function') return []
   try {
-    const records = await query.listSessions()
+    const records = await readUntilAborted(() => query.listSessions(signal), signal)
     const lists = []
     for (const record of Array.isArray(records) ? records : []) {
       const id = record && record.header && record.header.id
       if (typeof id !== 'string' || id === sessionId) continue
       try {
-        const snapshot = await query.readSession(id)
+        const snapshot = await readUntilAborted(() => query.readSession(id), signal)
         if (snapshot && Array.isArray(snapshot.events)) {
           lists.push({ sessionId: id, events: snapshot.events })
         }
       } catch {
+        if (signal) signal.throwIfAborted()
         // One unreadable historical session should not block current suggestions.
       }
       if (lists.length >= config.maxHistorySessions) break
     }
     return lists
   } catch {
+    if (signal) signal.throwIfAborted()
     return []
   }
 }
@@ -318,15 +334,20 @@ function createGenerateStream(ctx, config, instrumentation = {}) {
     let timedOut = false
     const controller = new AbortController()
     const abortForRequest = () => controller.abort()
-    if (requestSignal) requestSignal.addEventListener('abort', abortForRequest, { once: true })
+    if (requestSignal) {
+      if (requestSignal.aborted) abortForRequest()
+      else requestSignal.addEventListener('abort', abortForRequest, { once: true })
+    }
     const timer = setTimeout(() => {
       timedOut = true
       controller.abort()
     }, config.timeoutMs)
     let modelStarted = null
     try {
+      controller.signal.throwIfAborted()
       const historyStarted = now()
-      const history = await historicalEvents(ctx, args.sessionId, config)
+      const history = await historicalEvents(ctx, args.sessionId, config, controller.signal)
+      controller.signal.throwIfAborted()
       metric.stages.historyMs = roundMs(now() - historyStarted)
       const inputStarted = now()
       const input = buildSuggestionInput(args, session.events, history, config)
@@ -381,7 +402,7 @@ function createGenerateStream(ctx, config, instrumentation = {}) {
         input.currentCycleSkipped,
         async (nextCandidate) => {
           metric.stages.candidateMs[0] = roundMs(now() - modelStarted)
-          if (requestSignal && requestSignal.aborted) throw new Error('client-disconnected')
+          controller.signal.throwIfAborted()
           if (automaticTrigger && !automaticTurnIsCurrent(session, args.trigger)) {
             throw new Error('automatic-turn-changed')
           }
@@ -412,6 +433,7 @@ function createGenerateStream(ctx, config, instrumentation = {}) {
           },
         },
       )
+      controller.signal.throwIfAborted()
       if (automaticTrigger && !automaticTurnIsCurrent(session, args.trigger)) {
         return failure('TURN_NOT_COMPLETED', 'The completed turn changed before the suggestion was ready.')
       }

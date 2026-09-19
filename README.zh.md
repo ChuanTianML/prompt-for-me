@@ -12,6 +12,7 @@ Prompt for Me 会根据 DeepSeek Harness 中有界的会话历史和本地建议
 
 - 只有在出现新的已完成轮次、Session 空闲、plan mode 未生效，并且输入框文字严格为空、没有图片和排队意图时，才会自动生成。
 - Host 策略尚未载入或输入框暂时不符合条件时，会保留这条已完成轮次；条件恢复后再生成一次。
+- 自动生成期间输入框不再符合条件时，会取消请求并忽略迟到结果。原生输入框明确拒绝建议时，不会改用预览卡片展示。
 - 更新的轮次完成时会淘汰上一段上下文留下的建议；即使提交过快、没有渲染中间输入状态，也不会让旧建议阻塞新建议。
 - 新版 Harness 使用输入框内联 ghost text；较旧客户端使用一张不修改草稿的轻量预览卡片。
 - 按 Tab、右方向键或相邻勾选控件采用 ghost；Enter 永远不会采用 ghost。
@@ -38,7 +39,7 @@ Prompt for Me 会根据 DeepSeek Harness 中有界的会话历史和本地建议
 推荐安装 Release 中已经构建好的 tarball，不需要执行构建脚本：
 
 ```sh
-dsh plugin --profile web add https://github.com/ChuanTianML/prompt-for-me/releases/download/v0.6.0/dsh-prompt-for-me-0.6.0.tgz
+dsh plugin --profile web add https://github.com/ChuanTianML/prompt-for-me/releases/download/v0.6.1/dsh-prompt-for-me-0.6.1.tgz
 ```
 
 安装后重启 `dsh web`。
@@ -46,7 +47,7 @@ dsh plugin --profile web add https://github.com/ChuanTianML/prompt-for-me/releas
 也可以安装固定 Git 标签：
 
 ```sh
-dsh plugin --profile web add github:ChuanTianML/prompt-for-me#v0.6.0
+dsh plugin --profile web add github:ChuanTianML/prompt-for-me#v0.6.1
 ```
 
 使用 pnpm 10 从 Git 安装时，可能需要在 Web profile 的 `pnpm-workspace.yaml` 中为 `allowBuilds` 添加 `dsh-prompt-for-me: true`，然后重新运行命令。`prepare` 脚本只复制 checkout 中的 Host 文件并包装 Client factory，不会下载任何内容。
@@ -63,6 +64,8 @@ dsh plugin --profile web remove dsh-prompt-for-me
 ## Web UI 设置
 
 打开 **设置 → 插件 → 可配置**，展开 **Prompt for Me / Prompt 嘴替**。设置卡片沿用 Harness 的设置层级、颜色、间距和保存交互，并把选择持久化到统一的 Host 用户设置中；保存后立即生效，无须重启。
+
+保存期间可以继续修改设置；这些新修改会保留为未保存状态，需要再次点击“保存”。
 
 - **Agent 回复后自动建议**：默认开启。关闭后会撤下尚未采用的自动 Ghost Text，并停止后续自动生成；Sparkles 手动 Trigger 仍然可用。
 - **手动生成快捷键**：默认是 `Mod+Shift+Space`。点击当前组合键后直接按下新的 Command/Ctrl 或 Alt 组合键，也可以单独关闭快捷键。Ghost Text 的采用键仍由 Harness 管理，默认是 Tab。
@@ -139,7 +142,7 @@ Web UI 只公开上述三个对日常交互有明确价值的选项。下表是�
 | `maxLocalOutcomes` | `50` | 浏览器本地交互记录上限。 |
 | `maxLocalOutcomesBytes` | `131072` | 浏览器本地记录及其 RPC 副本共享的 JSON 预算。 |
 | `maxOutputTokens` | `2048` | 辅助模型输出预算。 |
-| `timeoutMs` | `30000` | 辅助模型调用超时。 |
+| `timeoutMs` | `30000` | 建议请求超时，覆盖历史会话读取和辅助模型调用。 |
 | `shortcut` | `Mod+Shift+Space` | 跨平台 Trigger，也可设为 `disabled`。 |
 
 ## 开发
@@ -151,6 +154,8 @@ npm run check
 ```
 
 该命令会重新构建 Host/Client 静态产物、运行 Node 测试，并检查 npm 包内容。
+
+设置界面的真实 React 回归测试会分别验证源码和构建产物，运行方式见 [UI 测试说明](https://github.com/ChuanTianML/prompt-for-me/blob/main/test-ui/README.md)。
 
 ## License
 

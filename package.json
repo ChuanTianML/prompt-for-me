@@ -1,6 +1,6 @@
 {
   "name": "dsh-prompt-for-me",
-  "version": "0.6.0",
+  "version": "0.6.1",
   "description": "Automatic ghost-text next-message suggestions for DeepSeek Harness, with direct-fill manual generation.",
   "type": "commonjs",
   "main": "lib/index.cjs",
@@ -16,13 +16,15 @@
     "cordis.patch.yml",
     "README.md",
     "README.zh.md",
+    "CHANGELOG.md",
     "LICENSE"
   ],
   "scripts": {
     "build": "node scripts/build.mjs",
     "prepare": "node scripts/build.mjs",
     "test": "node --test",
-    "check": "npm run build && npm test && npm pack --dry-run --cache .npm-cache"
+    "check": "npm run build && npm test && npm pack --dry-run --cache .npm-cache",
+    "test:ui": "node --test test-ui/settings.cjs"
   },
   "dsh": {
     "bundle": {
