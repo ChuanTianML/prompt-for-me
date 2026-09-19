@@ -3,6 +3,7 @@
 const test = require('node:test')
 const assert = require('node:assert/strict')
 const { readFileSync } = require('node:fs')
+const { join } = require('node:path')
 const { runInThisContext } = require('node:vm')
 const { JSDOM } = require('jsdom')
 const React = require('react')
@@ -10,7 +11,7 @@ const { createRoot } = require('react-dom/client')
 const { act } = React
 const createPlugin = require('../src/client-factory.cjs')
 
-async function settingsCard() {
+async function settingsCard(bundlePath) {
   const dom = new JSDOM('<!doctype html><html lang="en"><head></head><body><div id="root"></div></body></html>', {
     url: 'http://localhost',
   })
@@ -19,9 +20,9 @@ async function settingsCard() {
   global.IS_REACT_ACT_ENVIRONMENT = true
   window.fetch = async () => ({ json: async () => ({ ok: false }) })
   let plugin
-  if (process.env.PFM_UI_BUNDLE_PATH) {
+  if (bundlePath) {
     window.__ModuleLoader__ = { load: (entry) => { plugin = entry.factory(require) } }
-    runInThisContext(readFileSync(process.env.PFM_UI_BUNDLE_PATH, 'utf8'))
+    runInThisContext(readFileSync(bundlePath, 'utf8'))
   } else {
     plugin = createPlugin(React, { automatic: false, rpc: async () => ({ ok: false }) })
   }
@@ -63,65 +64,71 @@ async function settingsCard() {
     } }
 }
 
-for (const notification of ['before completion', 'with completion']) {
-  test(`new settings edits survive a saved snapshot ${notification} and can be saved separately`, async () => {
-    const card = await settingsCard()
+const targets = process.env.PFM_UI_BUNDLE_PATH
+  ? [['release bundle', process.env.PFM_UI_BUNDLE_PATH]]
+  : [['source', undefined], ['client bundle', join(__dirname, '../lib/client.cjs')]]
+
+for (const [target, bundlePath] of targets) {
+  for (const notification of ['before completion', 'with completion']) {
+    test(`${target}: new settings edits survive a saved snapshot ${notification} and can be saved separately`, async () => {
+      const card = await settingsCard(bundlePath)
+      try {
+        await card.click('input[type="checkbox"]')
+        await card.click('.dsh-pfm-settings-save')
+        assert.equal(card.saves[0].value.automatic, false)
+        await card.click('input[type="checkbox"]')
+        assert.equal(card.checked(), true)
+        if (notification === 'before completion') {
+          await act(async () => card.saves[0].publish())
+          assert.equal(card.checked(), true)
+          await act(async () => card.saves[0].resolve())
+        } else {
+          await act(async () => { card.saves[0].publish(); card.saves[0].resolve() })
+        }
+        assert.equal(card.checked(), true)
+        assert.equal(card.saveDisabled(), false)
+        assert.equal(document.querySelector('.dsh-pfm-settings-pending').textContent, 'Unsaved')
+        await card.click('.dsh-pfm-settings-save')
+        assert.equal(card.saves[1].value.automatic, true)
+        await act(async () => { card.saves[1].publish(); card.saves[1].resolve() })
+        assert.equal(card.checked(), true)
+        assert.equal(card.saveDisabled(), true)
+        assert.equal(document.querySelector('.dsh-pfm-settings-pending'), null)
+      } finally { await card.close() }
+    })
+  }
+
+  test(`${target}: saving without newer edits clears the unsaved indicator`, async () => {
+    const card = await settingsCard(bundlePath)
     try {
       await card.click('input[type="checkbox"]')
       await card.click('.dsh-pfm-settings-save')
-      assert.equal(card.saves[0].value.automatic, false)
-      await card.click('input[type="checkbox"]')
-      assert.equal(card.checked(), true)
-      if (notification === 'before completion') {
-        await act(async () => card.saves[0].publish())
-        assert.equal(card.checked(), true)
-        await act(async () => card.saves[0].resolve())
-      } else {
-        await act(async () => { card.saves[0].publish(); card.saves[0].resolve() })
-      }
-      assert.equal(card.checked(), true)
-      assert.equal(card.saveDisabled(), false)
-      assert.equal(document.querySelector('.dsh-pfm-settings-pending').textContent, 'Unsaved')
-      await card.click('.dsh-pfm-settings-save')
-      assert.equal(card.saves[1].value.automatic, true)
-      await act(async () => { card.saves[1].publish(); card.saves[1].resolve() })
-      assert.equal(card.checked(), true)
+      await act(async () => card.saves[0].publish())
+      await act(async () => card.saves[0].resolve())
+      assert.equal(card.checked(), false)
       assert.equal(card.saveDisabled(), true)
       assert.equal(document.querySelector('.dsh-pfm-settings-pending'), null)
     } finally { await card.close() }
   })
-}
 
-test('saving without newer edits clears the unsaved indicator', async () => {
-  const card = await settingsCard()
-  try {
-    await card.click('input[type="checkbox"]')
-    await card.click('.dsh-pfm-settings-save')
-    await act(async () => card.saves[0].publish())
-    await act(async () => card.saves[0].resolve())
-    assert.equal(card.checked(), false)
-    assert.equal(card.saveDisabled(), true)
-    assert.equal(document.querySelector('.dsh-pfm-settings-pending'), null)
-  } finally { await card.close() }
-})
-
-for (const failure of ['unchanged snapshot', 'rejected promise']) {
-  test(`a save with ${failure} preserves edits and allows retry`, async () => {
-    const card = await settingsCard()
-    try {
-      await card.click('input[type="checkbox"]')
-      await card.click('.dsh-pfm-settings-save')
-      await act(async () => {
-        if (failure === 'rejected promise') card.saves[0].reject(new Error('storage unavailable'))
-        else card.saves[0].resolve()
-      })
-      assert.equal(card.checked(), false)
-      assert.equal(card.saveDisabled(), false)
-      assert.ok(document.querySelector('.dsh-pfm-settings-status[data-error="true"]'))
-      await card.click('.dsh-pfm-settings-save')
-      await act(async () => { card.saves[1].publish(); card.saves[1].resolve() })
-      assert.equal(card.saveDisabled(), true)
-      assert.equal(document.querySelector('.dsh-pfm-settings-status[data-error="true"]'), null)
-    } finally { await card.close() }
-  })
+  for (const failure of ['unchanged snapshot', 'rejected promise']) {
+    test(`${target}: a save with ${failure} preserves edits and allows retry`, async () => {
+      const card = await settingsCard(bundlePath)
+      try {
+        await card.click('input[type="checkbox"]')
+        await card.click('.dsh-pfm-settings-save')
+        await act(async () => {
+          if (failure === 'rejected promise') card.saves[0].reject(new Error('storage unavailable'))
+          else card.saves[0].resolve()
+        })
+        assert.equal(card.checked(), false)
+        assert.equal(card.saveDisabled(), false)
+        assert.ok(document.querySelector('.dsh-pfm-settings-status[data-error="true"]'))
+        await card.click('.dsh-pfm-settings-save')
+        await act(async () => { card.saves[1].publish(); card.saves[1].resolve() })
+        assert.equal(card.saveDisabled(), true)
+        assert.equal(document.querySelector('.dsh-pfm-settings-status[data-error="true"]'), null)
+      } finally { await card.close() }
+    })
+  }
 }

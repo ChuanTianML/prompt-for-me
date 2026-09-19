@@ -153,7 +153,7 @@ Web UI 只公开上述三个对日常交互有明确价值的选项。下表是�
 npm run check
 ```
 
-该命令会重新构建 Host/Client 静态产物、运行 Node 测试，并检查 npm 包内容。
+该命令会重新构建 Host/Client 静态产物、运行 Node 和 React 界面测试，并检查 npm 包内容。
 
 设置界面的真实 React 回归测试会分别验证源码和构建产物，运行方式见 [UI 测试说明](https://github.com/ChuanTianML/prompt-for-me/blob/main/test-ui/README.md)。
 

@@ -23,7 +23,7 @@
     "build": "node scripts/build.mjs",
     "prepare": "node scripts/build.mjs",
     "test": "node --test",
-    "check": "npm run build && npm test && npm pack --dry-run --cache .npm-cache",
+    "check": "npm run build && npm test && npm run test:ui && npm pack --dry-run --cache .npm-cache",
     "test:ui": "node --test test-ui/settings.cjs"
   },
   "dsh": {
@@ -82,5 +82,10 @@
   "engines": {
     "node": ">=22.19"
   },
-  "license": "MIT"
+  "license": "MIT",
+  "devDependencies": {
+    "jsdom": "29.1.1",
+    "react": "18.3.1",
+    "react-dom": "18.3.1"
+  }
 }

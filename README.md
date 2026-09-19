@@ -153,9 +153,9 @@ Requires Node.js 22.19 or newer.
 npm run check
 ```
 
-The command rebuilds the static Host/Client artifacts, runs the Node test suite, and verifies the npm package contents.
+The command rebuilds the static Host/Client artifacts, runs the Node and React UI test suites, and verifies the npm package contents.
 
-Real React settings regression tests run separately against source and built clients; see [UI test setup](https://github.com/ChuanTianML/prompt-for-me/blob/main/test-ui/README.md).
+The React settings tests cover both source and built clients; see [UI test setup](https://github.com/ChuanTianML/prompt-for-me/blob/main/test-ui/README.md).
 
 ## License
 
