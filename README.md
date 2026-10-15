@@ -59,7 +59,7 @@ Click **✦**, immediately left of Send, or use the default shortcut **⌘⇧Spa
 The release tarball is the simplest option because it contains prebuilt Host and Client artifacts:
 
 ```sh
-dsh plugin --profile web add https://github.com/ChuanTianML/prompt-for-me/releases/download/v0.6.1/dsh-prompt-for-me-0.6.1.tgz
+dsh plugin --profile web add https://github.com/ChuanTianML/prompt-for-me/releases/download/v0.6.2/dsh-prompt-for-me-0.6.2.tgz
 ```
 
 Restart `dsh web` after installation.
@@ -67,8 +67,10 @@ Restart `dsh web` after installation.
 You may also install a pinned Git tag:
 
 ```sh
-dsh plugin --profile web add github:ChuanTianML/prompt-for-me#v0.6.1
+dsh plugin --profile web add github:ChuanTianML/prompt-for-me#v0.6.2
 ```
+
+Version 0.6.2 fixes a startup failure when this plugin and another plugin, such as dshmarket, load Schemastery concurrently. Upgrade affected 0.6.0/0.6.1 installations with `dsh plugin --profile web add dsh-prompt-for-me@0.6.2`, then restart DSH.
 
 pnpm 10 may ask you to allow the package's `prepare` script for a Git install. Add `dsh-prompt-for-me: true` under `allowBuilds` in the Web profile's `pnpm-workspace.yaml`, then run the command again. The script only copies the checked-out Host files and wraps the checked-out Client factory; it performs no downloads.
 

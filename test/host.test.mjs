@@ -1,10 +1,8 @@
-'use strict'
-
-const test = require('node:test')
-const assert = require('node:assert/strict')
-const { EventEmitter } = require('node:events')
-const host = require('../src/index.cjs')
-const { resolveConfig } = require('../src/core.cjs')
+import test from 'node:test'
+import assert from 'node:assert/strict'
+import { EventEmitter } from 'node:events'
+import host from '../src/index.mjs'
+import { applyUserSettings, resolveConfig } from '../src/core.cjs'
 
 function userEvent(text, source = { kind: 'user' }) {
   return { type: 'user/message', data: { content: [{ type: 'text', text }], source } }
@@ -408,7 +406,7 @@ test('the plugin RPC reads and atomically replaces its Host settings section', a
   }
   host._testing.registerRoute(
     ctx,
-    () => require('../src/core.cjs').applyUserSettings(base, current),
+    () => applyUserSettings(base, current),
     () => binding,
   )
 

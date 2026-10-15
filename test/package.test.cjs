@@ -2,7 +2,7 @@
 
 const test = require('node:test')
 const assert = require('node:assert/strict')
-const { readFileSync } = require('node:fs')
+const { existsSync, readFileSync } = require('node:fs')
 const { join } = require('node:path')
 
 const root = join(__dirname, '..')
@@ -24,8 +24,9 @@ test('package declares an installable DSH bundle and web client', () => {
   }
 })
 
-test('generated host and client artifacts are loadable and self-contained', () => {
-  const host = require('../lib/index.cjs')
+test('generated host and client artifacts are loadable and self-contained', async () => {
+  const { default: host } = await import('../lib/index.mjs')
+  assert.equal(existsSync(join(root, 'lib', 'index.cjs')), false)
   assert.equal(host.name, 'dsh-prompt-for-me')
   assert.equal(typeof host.apply, 'function')
   const client = readFileSync(join(root, 'lib', 'client.cjs'), 'utf8')
