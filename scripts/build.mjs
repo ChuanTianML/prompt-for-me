@@ -1,4 +1,4 @@
-import { copyFile, mkdir, readFile, writeFile } from 'node:fs/promises'
+import { copyFile, mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import { createRequire } from 'node:module'
 import { fileURLToPath } from 'node:url'
@@ -8,7 +8,9 @@ const root = dirname(dirname(fileURLToPath(import.meta.url)))
 const lib = join(root, 'lib')
 await mkdir(lib, { recursive: true })
 
-await copyFile(join(root, 'src', 'index.cjs'), join(lib, 'index.cjs'))
+// Remove the former CommonJS entry when rebuilding an existing checkout.
+await rm(join(lib, 'index.cjs'), { force: true })
+await copyFile(join(root, 'src', 'index.mjs'), join(lib, 'index.mjs'))
 await copyFile(join(root, 'src', 'core.cjs'), join(lib, 'core.cjs'))
 
 const createClientPlugin = require('../src/client-factory.cjs')

@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.6.2
+
+### 修复
+
+- 将 Host 入口改为 ESM，修复与 dshmarket 等插件并发加载共享 Schemastery/Cosmokit 依赖时导致整个 DSH 启动失败的问题（#5）。该问题影响 0.6.0 和 0.6.1。
+- 增加发布入口的独立进程并发加载回归，并在 Windows、macOS、Linux 的 Node 22.19.0 和 24.15.0 上执行完整检查。
+
+### Fixes
+
+- Load the Host through an ESM entry so concurrent Schemastery/Cosmokit imports from plugins such as dshmarket cannot fail DSH startup (#5). Versions 0.6.0 and 0.6.1 are affected.
+- Cover concurrent installed-package imports in fresh processes and run the full checks on Windows, macOS, and Linux with Node 22.19.0 and 24.15.0.
+
+Suggestion behavior, saved settings, production dependency ranges, and the browser ModuleLoader bundle are unchanged.
+
 ## 0.6.1
 
 ### 修复
